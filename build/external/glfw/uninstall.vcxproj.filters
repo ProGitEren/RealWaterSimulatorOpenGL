@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\devuser\OpenGLProjects\RealWaterSimulator\build\CMakeFiles\128c1d8ba00fd6408b5547a57c40ae98\uninstall.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\devuser\OpenGLProjects\RealWaterSimulator\external\glfw\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\devuser\OpenGLProjects\RealWaterSimulator\build\external\glfw\CMakeFiles\uninstall" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{2AA2A193-1D78-32CF-A443-AEEBF904A145}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

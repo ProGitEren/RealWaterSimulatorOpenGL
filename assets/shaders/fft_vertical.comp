@@ -1,0 +1,91 @@
+#version 460 core
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0, rgba32f) uniform writeonly image2D destinationTextureA;
+layout(binding = 1, rg32f) uniform writeonly image2D destinationTextureB;
+uniform sampler2D sourceTextureA;
+uniform sampler2D sourceTextureB;
+uniform uint resolution;
+uniform uint log2Resolution;
+
+const float PI = 3.14159265359;
+shared vec4 sharedA[256];
+shared vec4 scratchA[256];
+shared vec2 sharedB[256];
+shared vec2 scratchB[256];
+
+uint bitReverse(uint value, uint bitCount) {
+    uint reversed = 0u;
+    for (uint i = 0u; i < bitCount; ++i) {
+        reversed = (reversed << 1u) | ((value >> i) & 1u);
+    }
+    return reversed;
+}
+
+vec2 complexMul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+vec4 complexMulPairs(vec4 value, vec2 factor) {
+    return vec4(
+        complexMul(value.xy, factor),
+        complexMul(value.zw, factor)
+    );
+}
+
+void main() {
+    uint column = gl_WorkGroupID.x;
+    uint index = gl_LocalInvocationID.x;
+    if (column >= resolution) {
+        return;
+    }
+
+    if (index < resolution) {
+        uint reversed = bitReverse(index, log2Resolution);
+        sharedA[index] = texelFetch(sourceTextureA, ivec2(int(column), int(reversed)), 0);
+        sharedB[index] = texelFetch(sourceTextureB, ivec2(int(column), int(reversed)), 0).xy;
+    } else {
+        sharedA[index] = vec4(0.0);
+        sharedB[index] = vec2(0.0);
+    }
+    barrier();
+
+    for (uint size = 2u; size <= resolution; size <<= 1u) {
+        uint halfSize = size >> 1u;
+        if (index < resolution) {
+            uint blockStart = (index / size) * size;
+            uint butterfly = index % size;
+            uint evenIndex = blockStart + (butterfly % halfSize);
+            uint oddIndex = evenIndex + halfSize;
+            float angle = 2.0 * PI * float(butterfly % halfSize) / float(size);
+            vec2 twiddle = vec2(cos(angle), sin(angle));
+            vec4 evenA = sharedA[evenIndex];
+            vec4 oddA = sharedA[oddIndex];
+            vec2 evenB = sharedB[evenIndex];
+            vec2 oddB = sharedB[oddIndex];
+            vec4 transformedA = complexMulPairs(oddA, twiddle);
+            vec2 transformedB = complexMul(oddB, twiddle);
+
+            if (butterfly < halfSize) {
+                scratchA[index] = evenA + transformedA;
+                scratchB[index] = evenB + transformedB;
+            } else {
+                scratchA[index] = evenA - transformedA;
+                scratchB[index] = evenB - transformedB;
+            }
+        }
+        barrier();
+        if (index < resolution) {
+            sharedA[index] = scratchA[index];
+            sharedB[index] = scratchB[index];
+        }
+        barrier();
+    }
+
+    if (index < resolution) {
+        vec4 normalizedA = sharedA[index] / float(resolution);
+        vec2 normalizedB = sharedB[index] / float(resolution);
+        imageStore(destinationTextureA, ivec2(int(column), int(index)), normalizedA);
+        imageStore(destinationTextureB, ivec2(int(column), int(index)), vec4(normalizedB, 0.0, 0.0));
+    }
+}

@@ -1,0 +1,39 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, r32f) uniform writeonly image2D nextPhaseTexture;
+uniform sampler2D currentPhaseTexture;
+uniform uint resolution;
+uniform float oceanSize;
+uniform float deltaTime;
+uniform float timeScale;
+
+const float PI = 3.14159265359;
+const float GRAVITY = 9.81;
+const float KILOMETERS = 370.0;
+
+vec2 waveVector(ivec2 coord) {
+    float n = coord.x < int(resolution / 2u) ? float(coord.x) : float(coord.x) - float(resolution);
+    float m = coord.y < int(resolution / 2u) ? float(coord.y) : float(coord.y) - float(resolution);
+    return (2.0 * PI * vec2(n, m)) / oceanSize;
+}
+
+float dispersion(float waveNumber) {
+    if (waveNumber < 1e-6) {
+        return 0.0;
+    }
+
+    return sqrt(GRAVITY * waveNumber * (1.0 + (waveNumber * waveNumber) / (KILOMETERS * KILOMETERS)));
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(resolution) || coord.y >= int(resolution)) {
+        return;
+    }
+
+    float currentPhase = texelFetch(currentPhaseTexture, coord, 0).r;
+    float omega = dispersion(length(waveVector(coord)));
+    float nextPhase = mod(currentPhase + omega * deltaTime * timeScale, 2.0 * PI);
+    imageStore(nextPhaseTexture, coord, vec4(nextPhase, 0.0, 0.0, 0.0));
+}

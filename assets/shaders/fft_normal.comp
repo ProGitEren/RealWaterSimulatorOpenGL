@@ -1,0 +1,52 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba16f) uniform writeonly image2D normalTexture;
+uniform sampler2D displacementTexture;
+uniform uint resolution;
+uniform float oceanSize;
+
+ivec2 wrapCoord(ivec2 coord) {
+    ivec2 wrapped = coord % int(resolution);
+    if (wrapped.x < 0) wrapped.x += int(resolution);
+    if (wrapped.y < 0) wrapped.y += int(resolution);
+    return wrapped;
+}
+
+vec3 sampleDisplacedPosition(ivec2 coord) {
+    ivec2 wrapped = wrapCoord(coord);
+    vec3 displacement = texelFetch(displacementTexture, wrapped, 0).xyz;
+    vec2 baseXZ = ((vec2(wrapped) / float(resolution)) - 0.5) * oceanSize;
+    return vec3(baseXZ.x + displacement.x, displacement.y, baseXZ.y + displacement.z);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(resolution) || coord.y >= int(resolution)) return;
+
+    vec3 center = sampleDisplacedPosition(coord);
+
+    // Four cardinal neighbours
+    vec3 right = sampleDisplacedPosition(coord + ivec2( 1,  0)) - center; // +x
+    vec3 left  = sampleDisplacedPosition(coord + ivec2(-1,  0)) - center; // -x
+    vec3 fwd   = sampleDisplacedPosition(coord + ivec2( 0, -1)) - center; // -z  (= "up" in texel space)
+    vec3 back  = sampleDisplacedPosition(coord + ivec2( 0,  1)) - center; // +z
+
+    // Winding verified: all four quads contribute +Y for a flat surface
+    vec3 normal = normalize(
+        cross(right, fwd) +
+        cross(fwd,  left) +
+        cross(left, back) +
+        cross(back, right)
+    );
+
+    // Jacobian of the horizontal displacement field in the XZ plane.
+    // J = (1 + dDx/dx)(1 + dDz/dz) - (dDx/dz)(dDz/dx)
+    //   = (right.x * back.z - back.x * right.z) / texelSize^2
+    // J < 0: surface is folding over -> whitecap foam
+    float texelSize = oceanSize / float(resolution);
+    float jacobian  = (right.x * back.z - back.x * right.z) / (texelSize * texelSize);
+    float foam      = clamp(-jacobian * 2.5, 0.0, 1.0);
+
+    imageStore(normalTexture, coord, vec4(normal, foam));
+}
