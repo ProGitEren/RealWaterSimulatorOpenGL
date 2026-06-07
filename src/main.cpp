@@ -67,9 +67,12 @@ unsigned int loadCubemap(const std::vector<std::string>& faces) {
 namespace {
     constexpr float         kFixedDt          = 1.0f / 60.0f;
     constexpr float         kMaxAccumulatedTime = 0.25f;
-    constexpr unsigned int  kOceanResolution  = 128;
-    constexpr int           kOceanMeshRes     = 512;   // vertex grid — 512x512 = 1024m ocean
-    constexpr float         kOceanMeshTile    = 2.0f;  // meters per tile
+    constexpr unsigned int  kOceanResolution  = 512;  // Stockham FFT — true 512, matches reference
+    // Match achalpandeyy/OceanFFT exactly: 1024x1024 grid, 1m vertex spacing,
+    // 1024m wide ocean patch. 1m spacing (vs the old 2m) is what lets the fine
+    // FFT waves actually show up in the geometry instead of being smeared.
+    constexpr int           kOceanMeshRes     = 1024;  // vertex grid — 1024x1024
+    constexpr float         kOceanMeshTile    = 1.0f;  // meters per tile -> 1024m
     constexpr int           kPhysicsGridSize  = 150;   // CPU physics grid (rain ripples)
     constexpr float         kPhysicsTileSize  = 1.0f;
     // 256 entries = 256 loop iterations per fragment — safe budget.
@@ -172,7 +175,7 @@ int main() {
     unsigned int cubemapTexture = loadCubemap(faces);
 
     // --- OCEAN ---
-    GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 8.0f, 35.0f, 1.15f);
+    GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 8.0f, 35.0f, 1.6f);
     OceanMesh      oceanMesh(kOceanMeshRes, kOceanMeshTile);
     GPUDisturbance disturbance(256u, kOceanMeshRes * kOceanMeshTile);
 

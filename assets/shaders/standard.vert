@@ -23,8 +23,11 @@ void main() {
     // World position before any displacement
     vec3 worldPos = vec3(model * vec4(aPos, 1.0));
 
-    // FFT UV: tiling, world-anchored
-    OceanUV = fract(worldPos.xz / oceanSize + vec2(0.5));
+    // FFT UV: world-anchored, one FFT patch per oceanSize. The 512-res Stockham
+    // FFT supplies all the fine detail, so no tex_coord_scale multiplier is
+    // needed (a >1 scale broke tileability at the patch edge -> seam line).
+    // Continuous UVs (no fract) let GL_REPEAT wrap cleanly per-fragment.
+    OceanUV = (worldPos.xz / oceanSize + vec2(0.5));
 
     // Disturbance UV: non-tiling, world-anchored [0,1]
     DisturbUV = clamp(worldPos.xz / oceanSize + vec2(0.5), vec2(0.0), vec2(1.0));

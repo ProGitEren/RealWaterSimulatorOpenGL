@@ -63,6 +63,13 @@ private:
     unsigned int m_displacementTexture;
     unsigned int m_normalTexture;
 
+    // Stockham FFT ping-pong bookkeeping: track which texture pair holds the
+    // result after the row pass and after the final (column) pass.
+    unsigned int m_fftRowResultA = 0;
+    unsigned int m_fftRowResultB = 0;
+    unsigned int m_fftFinalA = 0;
+    unsigned int m_fftFinalB = 0;
+
     void initializeTextures();
     void initializeNoiseTexture();
     void buildInitialSpectrum();

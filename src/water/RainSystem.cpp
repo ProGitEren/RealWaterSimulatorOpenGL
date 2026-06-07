@@ -118,7 +118,7 @@ void RainSystem::update(float deltaTime, const glm::vec3& cameraPos, WaterSimula
         ++it;
     }
 
-    // 4. AGE RIPPLES
+    // 4. AGE RIPPLES — live the full shader lifetime so they fade out naturally
     for (auto it = m_activeRipples.begin(); it != m_activeRipples.end(); ) {
         it->z += deltaTime;
         if (it->z > 6.0f)

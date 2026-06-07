@@ -38,12 +38,6 @@ vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
 }
 
 void main() {
-    // ---- base water colour (depth-cued) ----
-    vec3  deepColor  = vec3(0.004, 0.020, 0.075);
-    vec3  midColor   = vec3(0.012, 0.080, 0.175);
-    float heightFactor = clamp((FragPos.y + 1.5) * 0.4, 0.0, 1.0);
-    vec3  albedo = mix(deepColor, midColor, heightFactor);
-
     // ---- normals ----
     vec3 finalNormal = normalize(PhysicsNormal);
     float foam = 0.0;
@@ -90,8 +84,10 @@ void main() {
         float dist   = length(FragPos.xz - center);
         if (dist < 0.001) continue;
 
-        // sqrt fade: holds near full strength most of the lifetime, gentle tail-off
-        float fade = sqrt(max(0.0, 1.0 - age / kLifetime));
+        // Natural fade: stay near full strength for most of the life, then ease
+        // out smoothly (smoothstep tail) so the ripple never pops off abruptly.
+        float life = clamp(age / kLifetime, 0.0, 1.0);
+        float fade = 1.0 - smoothstep(0.55, 1.0, life);
         vec2  dir  = normalize(FragPos.xz - center);
 
         for (int k = 0; k < 4; k++) {
@@ -106,35 +102,82 @@ void main() {
     }
     finalNormal = normalize(finalNormal);
 
-    // ---- lighting ----
-    vec3 viewDir = normalize(viewPos - FragPos);
+    // ---- lighting (achalpandeyy/OceanFFT HDR-fresnel model) ----
+    // The crisp high-contrast ocean look comes from lighting in HDR (sky colour
+    // values well above 1.0) and tonemapping at the end. Fresnel drives the
+    // whole thing: slopes facing you stay dark ocean blue, slopes glancing the
+    // sky pick up sky light — that contrast is what makes each wave read sharply.
+    //
+    // This is a full physically-based deep-ocean model:
+    //   reflection (real cubemap) + refraction (depth-tinted body) +
+    //   subsurface scatter (backlit crest glow) + sun specular glitter +
+    //   foam, all composited in HDR and tonemapped.
+    vec3  viewDir  = normalize(viewPos - FragPos);
+    vec3  incident = normalize(FragPos - viewPos);
+    float NdotV    = max(dot(finalNormal, viewDir), 0.0);
 
-    // Fresnel (Schlick, R0 = 0.02 for water/air)
-    float cosTheta = max(dot(viewDir, finalNormal), 0.0);
-    float fresnel   = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
+    // ---- Fresnel (Schlick, R0 = 0.02 for water/air) ----
+    float fresnel = 0.02 + 0.98 * pow(1.0 - NdotV, 5.0);
 
-    // Cubemap reflection
-    vec3 R = reflect(normalize(FragPos - viewPos), finalNormal);
-    vec3 reflectionColor = texture(skybox, R).rgb;
+    // ---- REFLECTION: real environment, from your skybox cubemap ----
+    // Reflect the view ray off the wave normal and sample the actual sky. At
+    // grazing crest angles the ray can dip below the horizon; blend toward a
+    // bright horizon-sky tint there so we never sample the dark cube underside.
+    vec3  R            = reflect(incident, finalNormal);
+    // Boost the LDR cubemap into HDR so the exposure tonemap below renders the
+    // sky reflection at its true brightness instead of crushing it dark.
+    vec3  envReflect   = texture(skybox, R).rgb * 1.8;
+    const vec3 kHorizon = vec3(0.55, 0.68, 0.82);
+    float belowHorizon = smoothstep(0.0, -0.2, R.y);
+    vec3  reflection   = mix(envReflect, kHorizon, belowHorizon * 0.7);
 
-    // Blinn-Phong specular (sun)
-    vec3  halfDir = normalize(kSunDir + viewDir);
-    float spec    = pow(max(dot(finalNormal, halfDir), 0.0), 512.0);
-    vec3  specular = vec3(1.0, 0.97, 0.90) * spec * 2.8;
+    // ---- REFRACTION: depth-tinted water body ----
+    // Deep troughs = dark navy (long optical path), crests = brighter teal.
+    const vec3 kDeep    = vec3(0.005, 0.035, 0.085);
+    const vec3 kShallow = vec3(0.06, 0.30, 0.40);
+    float depthCue   = clamp((FragPos.y + 2.5) * 0.16, 0.0, 1.0);
+    vec3  bodyColor  = mix(kDeep, kShallow, depthCue);
 
-    // Subsurface scatter — light punching through wave crests toward viewer
-    float scatter = max(0.0, dot(kSunDir, -finalNormal))
-                  * max(0.0, dot(viewDir, kSunDir))
-                  * heightFactor;
-    vec3 scatterColor = vec3(0.02, 0.25, 0.18) * scatter * 2.0;
+    // Sun diffuse lifts the lit faces of the body a touch.
+    float diffuse = clamp(dot(finalNormal, kSunDir), 0.0, 1.0);
+    bodyColor *= (0.5 + 0.5 * diffuse);
 
-    // ---- compose ----
+    // ---- SUBSURFACE SCATTER: the signature "glow through the wave" ----
+    // Light transmitted through a crest toward the eye — strongest when the sun
+    // is behind the wave and you're looking roughly toward the sun. Keyed on
+    // crest height so it appears on the tops of swells, not in flat troughs.
+    const vec3 kScatterColor = vec3(0.08, 0.45, 0.35);
+    float crest    = clamp((FragPos.y - 0.1) * 0.4, 0.0, 1.0);
+    float backlight = pow(max(0.0, dot(viewDir, -kSunDir)), 4.0);
+    float sideLight = max(0.0, dot(finalNormal, kSunDir)) * 0.5 + 0.5;
+    vec3  scatter   = kScatterColor * crest * backlight * sideLight * 2.2;
+
+    // ---- COMPOSE refraction + scatter (under) with reflection (over) ----
+    vec3 underwater = bodyColor + scatter;
     float reflectStrength = SurfaceMask > 0.5 ? fresnel : 0.15;
-    vec3 waterColor = mix(albedo + scatterColor, reflectionColor, reflectStrength) + specular;
+    vec3 color = mix(underwater, reflection, reflectStrength);
 
-    // Whitecap foam (Jacobian fold-over from normal map alpha)
-    vec3 foamColor  = vec3(0.92, 0.96, 1.0);
-    vec3 finalResult = mix(waterColor, foamColor, foam * 0.75);
+    // ---- SUN SPECULAR: tight glint + broad glitter path ----
+    vec3  halfDir = normalize(kSunDir + viewDir);
+    float NdotH   = max(dot(finalNormal, halfDir), 0.0);
+    float glint   = pow(NdotH, 1200.0);   // sharp mirror highlight
+    float glitter = pow(NdotH, 120.0);    // broad sparkle over the chop
+    vec3  sunCol  = vec3(1.0, 0.96, 0.88);
+    color += sunCol * (glint * 4.0 + glitter * 0.4);
+
+    // ---- FOAM: soft-edged whitecaps, sun-shaded (not pure white) ----
+    float foamMask  = smoothstep(0.05, 0.55, foam);
+    float foamLight = 0.65 + 0.35 * diffuse;
+    color = mix(color, vec3(1.05, 1.10, 1.18) * foamLight, foamMask * 0.85);
+
+    // ---- DISTANCE HAZE: soften far water into the sky at the horizon ----
+    float dist = length(viewPos - FragPos);
+    float haze = smoothstep(500.0, 1700.0, dist);
+    color = mix(color, kHorizon, haze * 0.55);
+
+    // ---- HDR tonemap (exposure) for crisp contrast instead of a flat clamp ----
+    const float kExposure = 1.4;
+    vec3 finalResult = 1.0 - exp(-color * kExposure);
 
     FragColor = vec4(finalResult, 1.0);
 }

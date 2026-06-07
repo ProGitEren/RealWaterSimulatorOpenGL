@@ -14,8 +14,6 @@ const float KILOMETERS = 370.0;
 const float CAPILLARY_WAVE_SPEED = 0.23;
 const float OMEGA = 0.85;
 const float SPECTRUM_BOOST = 900.0;
-const float GEOMETRY_CUTOFF_START = 0.14;
-const float GEOMETRY_CUTOFF_RANGE = 0.25;
 
 float square(float value) {
     return value * value;
@@ -77,8 +75,10 @@ void main() {
 
     float spectrum = (1.0 / (2.0 * PI)) * pow(waveNumber, -4.0) * (bl + bh) * (1.0 + delta * (2.0 * cosPhi * cosPhi - 1.0));
     spectrum = max(spectrum, 0.0);
-    float shortWave = max((waveNumber - GEOMETRY_CUTOFF_START) / GEOMETRY_CUTOFF_RANGE, 0.0);
-    spectrum *= exp(-shortWave * shortWave * shortWave * shortWave);
+    // NOTE: the reference (achalpandeyy/OceanFFT) applies NO high-frequency
+    // cutoff — at resolution 512 the grid can carry the short capillary waves
+    // without aliasing, and those short waves ARE the crisp detail. Removing
+    // the old exp(-shortWave^4) cutoff is what restores the fine surface chop.
 
     vec2 gaussian = texelFetch(gaussianNoiseTexture, coord, 0).xy;
     float amplitude = sqrt(spectrum * 0.5) * dk * SPECTRUM_BOOST;

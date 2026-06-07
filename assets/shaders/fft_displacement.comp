@@ -14,12 +14,16 @@ void main() {
         return;
     }
 
+    // Stockham FFT does not normalize per-pass. Apply a single 1/N here; the
+    // remaining amplitude is dialed in with heightScale / horizontalScale.
+    float invN = 1.0 / float(resolution);
+
     vec4 spatialA = texelFetch(spatialTextureA, coord, 0);
     vec2 spatialB = texelFetch(spatialTextureB, coord, 0).xy;
     vec3 displacement = vec3(
-        spatialA.x * horizontalScale,
-        spatialA.z * heightScale,
-        spatialB.x * horizontalScale
+        spatialA.x * horizontalScale * invN,
+        spatialA.z * heightScale     * invN,
+        spatialB.x * horizontalScale * invN
     );
     imageStore(displacementTexture, coord, vec4(displacement, 1.0));
 }

@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace {
-    constexpr unsigned int kWorkgroupSize = 256;
+    constexpr unsigned int kMaxResolution = 1024;
     constexpr float kPi = 3.14159265359f;
 
     unsigned int nextPowerOfTwoLog(unsigned int value) {
@@ -27,8 +27,8 @@ GPUFFTOcean::GPUFFTOcean(unsigned int resolution, float oceanSize, float windSpe
       m_windSpeed(windSpeed),
       m_windAngleDegrees(windAngleDegrees),
       m_choppiness(choppiness),
-      m_heightScale(20.0f),
-      m_horizontalScale(1.0f),
+      m_heightScale(1.0f),        // 1/N normalization in displacement shader; modest scale
+      m_horizontalScale(0.08f),
       m_timeScale(2.0f),
       m_windDirection(glm::normalize(glm::vec2(std::cos(glm::radians(windAngleDegrees)), std::sin(glm::radians(windAngleDegrees))))),
       m_currentPhaseIndex(0),
@@ -50,8 +50,10 @@ GPUFFTOcean::GPUFFTOcean(unsigned int resolution, float oceanSize, float windSpe
       m_spatialTextureB(0),
       m_displacementTexture(0),
       m_normalTexture(0) {
-    if (resolution == 0 || (resolution & (resolution - 1u)) != 0u || resolution > kWorkgroupSize) {
-        std::cerr << "GPUFFTOcean requires a power-of-two resolution up to " << kWorkgroupSize << std::endl;
+    // Stockham FFT ping-pongs across log2(N) CPU-driven passes, so there is no
+    // single-workgroup shared-memory cap. Any power-of-two up to kMaxResolution.
+    if (resolution == 0 || (resolution & (resolution - 1u)) != 0u || resolution > kMaxResolution) {
+        std::cerr << "GPUFFTOcean requires a power-of-two resolution up to " << kMaxResolution << std::endl;
     }
 
     initializeTextures();
@@ -198,32 +200,61 @@ void GPUFFTOcean::update(float deltaTime) {
     glDispatchCompute(workgroups, workgroups, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
-    m_fftHorizontalShader.use();
-    m_fftHorizontalShader.setUInt("resolution", m_resolution);
-    m_fftHorizontalShader.setUInt("log2Resolution", m_log2Resolution);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_spectrumTextureA);
-    m_fftHorizontalShader.setInt("sourceTextureA", 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_spectrumTextureB);
-    m_fftHorizontalShader.setInt("sourceTextureB", 1);
-    glBindImageTexture(0, m_intermediateTextureA, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(1, m_intermediateTextureB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
-    glDispatchCompute(m_resolution, 1, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    // ---- Stockham FFT: ping-pong log2(N) passes per axis (no shared-mem cap) ----
+    // Two ping-pong buffer pairs: (intermediate*) and (spatial*). The first
+    // horizontal pass reads from (spectrum*); thereafter we alternate.
+    // Each butterfly thread handles 2 elements, so launch N/2 threads per line.
+    const unsigned int halfN = m_resolution / 2u;
 
+    // ROWS (horizontal). local size = (256, 1); launch ceil(N/2 / 256) x N groups.
+    m_fftHorizontalShader.use();
+    m_fftHorizontalShader.setInt("resolution", static_cast<int>(m_resolution));
+    {
+        unsigned int srcA = m_spectrumTextureA, srcB = m_spectrumTextureB;
+        unsigned int dstA = m_intermediateTextureA, dstB = m_intermediateTextureB;
+        unsigned int altA = m_spatialTextureA, altB = m_spatialTextureB;
+        const unsigned int groupsXh = (halfN + 255u) / 256u;
+        for (unsigned int p = 1u; p < m_resolution; p <<= 1u) {
+            m_fftHorizontalShader.setInt("subseqCount", static_cast<int>(p));
+            glBindImageTexture(0, srcA, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RGBA32F);
+            glBindImageTexture(1, srcB, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RG32F);
+            glBindImageTexture(2, dstA, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(3, dstB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
+            glDispatchCompute(groupsXh, m_resolution, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            // ping-pong: dst becomes next src; reuse the other pair as new dst
+            srcA = dstA; srcB = dstB;
+            dstA = (dstA == m_intermediateTextureA) ? altA : m_intermediateTextureA;
+            dstB = (dstB == m_intermediateTextureB) ? altB : m_intermediateTextureB;
+        }
+        // After the loop, the final horizontal result lives in srcA/srcB.
+        m_fftRowResultA = srcA; m_fftRowResultB = srcB;
+    }
+
+    // COLS (vertical). local size = (1, 256).
     m_fftVerticalShader.use();
-    m_fftVerticalShader.setUInt("resolution", m_resolution);
-    m_fftVerticalShader.setUInt("log2Resolution", m_log2Resolution);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_intermediateTextureA);
-    m_fftVerticalShader.setInt("sourceTextureA", 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_intermediateTextureB);
-    m_fftVerticalShader.setInt("sourceTextureB", 1);
-    glBindImageTexture(0, m_spatialTextureA, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(1, m_spatialTextureB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
-    glDispatchCompute(m_resolution, 1, 1);
+    m_fftVerticalShader.setInt("resolution", static_cast<int>(m_resolution));
+    {
+        unsigned int srcA = m_fftRowResultA, srcB = m_fftRowResultB;
+        // pick a destination pair distinct from src
+        unsigned int dstA = (srcA == m_spatialTextureA) ? m_intermediateTextureA : m_spatialTextureA;
+        unsigned int dstB = (srcB == m_spatialTextureB) ? m_intermediateTextureB : m_spatialTextureB;
+        const unsigned int groupsYv = (halfN + 255u) / 256u;
+        for (unsigned int p = 1u; p < m_resolution; p <<= 1u) {
+            m_fftVerticalShader.setInt("subseqCount", static_cast<int>(p));
+            glBindImageTexture(0, srcA, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RGBA32F);
+            glBindImageTexture(1, srcB, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RG32F);
+            glBindImageTexture(2, dstA, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(3, dstB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
+            glDispatchCompute(m_resolution, groupsYv, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            unsigned int tmpA = srcA, tmpB = srcB;
+            srcA = dstA; srcB = dstB; dstA = tmpA; dstB = tmpB;
+        }
+        // Final spatial result -> copy into the canonical spatial textures if needed.
+        m_fftFinalA = srcA; m_fftFinalB = srcB;
+    }
+
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
     m_displacementShader.use();
@@ -231,10 +262,10 @@ void GPUFFTOcean::update(float deltaTime) {
     m_displacementShader.setFloat("heightScale", m_heightScale);
     m_displacementShader.setFloat("horizontalScale", m_horizontalScale);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_spatialTextureA);
+    glBindTexture(GL_TEXTURE_2D, m_fftFinalA);   // wherever the ping-pong landed
     m_displacementShader.setInt("spatialTextureA", 0);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_spatialTextureB);
+    glBindTexture(GL_TEXTURE_2D, m_fftFinalB);
     m_displacementShader.setInt("spatialTextureB", 1);
     glBindImageTexture(0, m_displacementTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
     glDispatchCompute(workgroups, workgroups, 1);
