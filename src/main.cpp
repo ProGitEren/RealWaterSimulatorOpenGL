@@ -1,6 +1,9 @@
 #include "core/Window.h"
 #include "core/Camera.h"
 #include "graphics/Shader.h"
+#include "graphics/Model.h"
+#include "graphics/RockGenerator.h"
+#include "graphics/Texture.h"
 #include "ocean/GPUFFTOcean.h"
 #include "ocean/GPUDisturbance.h"
 #include "ocean/OceanMesh.h"
@@ -14,6 +17,9 @@
 #include <string>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <cstdlib>     // rand(), RAND_MAX, srand — not transitively guaranteed on MSVC
+#include <filesystem>  // create_directories for the recording output dir
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -124,6 +130,9 @@ int main() {
     Shader debugWireframeShader("../assets/shaders/standard.vert", "../assets/shaders/debug_wireframe.frag");
     Shader rainShader("../assets/shaders/rain.vert", "../assets/shaders/rain.frag");
     Shader skyboxShader("../assets/shaders/skybox.vert", "../assets/shaders/skybox.frag");
+    Shader objectShader("../assets/shaders/object.vert", "../assets/shaders/object.frag");
+    objectShader.use();
+    objectShader.setInt("skybox", 0);
 
     shader.use();
     shader.setInt("skybox", 0);
@@ -178,6 +187,87 @@ int main() {
     GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 8.0f, 35.0f, 1.6f);
     OceanMesh      oceanMesh(kOceanMeshRes, kOceanMeshTile);
     GPUDisturbance disturbance(256u, kOceanMeshRes * kOceanMeshTile);
+
+    // --- OBJECTS ---
+    // Poly Haven marble cliff (glTF + PBR textures). The procedural rock
+    // generator is still available (generateRock) as a fallback.
+    Model rock("../assets/models/rock_marble_cliff_05/marble_cliff_05_4k.gltf");
+    if (!rock.loaded()) {
+        std::cerr << "Rock model failed to load — using procedural fallback" << std::endl;
+        std::vector<Vertex> rv; std::vector<unsigned int> ri;
+        generateRock(3u, 1u, rv, ri);
+        rock = Model(rv, ri);
+    }
+    rock.setScale(4.0f);
+    rock.setPosition(glm::vec3(60.0f, -3.0f, 30.0f)); // partly out of the water
+
+    // --- VEHICLES: jet-ski, yacht, big-ship ---
+    // Loaded once each; given a random start position inside the bay plus a
+    // heading and speed so they cruise across the water. Press P to pause/resume.
+    Model jetski("../assets/models/jet-ski/scene.gltf");
+    Model yacht ("../assets/models/yacht/scene.gltf");
+    Model bigShip("../assets/models/big-ship/scene.gltf");
+
+    struct Vehicle {
+        Model* model;
+        glm::vec3 pos;
+        float heading;   // radians, yaw
+        float speed;     // m/s
+        float scale;
+        float yOffset;   // sit at/just above the waterline
+        float modelYaw;  // extra yaw so the model's forward axis aligns to heading
+    };
+
+    // Sizes: jet-ski raw ~15u, yacht ~3068u, ship ~5159u -> scale to sane metres.
+    auto frand = [](float a, float b) { return a + (b - a) * (float(rand()) / float(RAND_MAX)); };
+    // Scales account for each model's baked node transform. The jet-ski's glTF
+    // node matrix bakes in a 0.01 FBX scale, so its real size is only ~0.15u —
+    // it needs a MUCH larger multiplier than the yacht/ship to be visible.
+    // Last field (modelYaw) aligns each model's authored-forward axis with the
+    // travel heading: jet-ski faces +90° off (-PI/2 correction), yacht is
+    // reversed (+PI), big-ship is already correct (0).
+    const float kHalfPi = 1.5707963f;
+    const float kPiF    = 3.1415927f;
+    std::vector<Vehicle> vehicles = {
+        { &jetski,  glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f), 16.0f, 120.0f, 1.5f, -kHalfPi },
+        { &yacht,   glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  8.0f, 0.03f,  0.0f,  kPiF    },
+        { &bigShip, glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  5.0f, 0.02f,  0.0f,  0.0f    },
+    };
+    bool vehiclesMoving = true;   // toggled by P
+    bool pKeyWasDown    = false;
+    const float kBayBound = 430.0f; // turn the vehicles back inside this radius
+
+    // Coastal cliffs: real Poly Haven scan (coastal_cliff_04 — a ~87m-wide low
+    // shoreline cliff strip) arranged as a ring of coastline around the scene,
+    // each piece rotated to face inward toward the water. Scaled up for a
+    // mid-range coastal mountain look (taller than the raw 11m scan).
+    Model coastalCliff("../assets/models/mountain_terrain/coastal_cliff_04_4k.gltf");
+
+    // Each piece: position on the ring + scale (taller y for cliff height) +
+    // yaw so the cliff FACE looks inward toward the water (the origin).
+    struct MountainInstance { glm::vec3 pos; glm::vec3 scale; float rotY; };
+    // Water is a SQUARE patch spanning ±512m. Place edge cliffs just inside the
+    // edge and corner cliffs out at the square's corners so the whole boundary
+    // (edges AND corners) is covered by overlapping land — the hard tile edge is
+    // never visible.
+    const float kEdge   = 470.0f;     // edge-piece distance (just inside ±512)
+    const float kCorner = 470.0f;     // corner-piece axial offset -> sits at ±470,±470
+    // The model's cliff face points along its local +Z. To aim that face from a
+    // ring position (px,pz) back at the origin, rotate by atan2(-px,-pz).
+    // kFaceOffset flips it if this scan happens to face outward.
+    const float kFaceOffset = 0.0f;   // set to 3.14159f if faces point outward
+    auto faceIn = [&](float px, float pz) { return std::atan2(-px, -pz) + kFaceOffset; };
+    const float s = 9.0f;             // base scale (~87m -> ~780m wide cliffs)
+    const std::vector<MountainInstance> mountains = {
+        { glm::vec3(    0.0f, -6.0f, -kEdge),  glm::vec3(s, s*1.6f, s), faceIn(0.0f, -kEdge) },
+        { glm::vec3(    0.0f, -6.0f,  kEdge),  glm::vec3(s, s*1.5f, s), faceIn(0.0f,  kEdge) },
+        { glm::vec3(-kEdge,   -6.0f,    0.0f), glm::vec3(s, s*1.7f, s), faceIn(-kEdge, 0.0f) },
+        { glm::vec3( kEdge,   -6.0f,    0.0f), glm::vec3(s, s*1.5f, s), faceIn( kEdge, 0.0f) },
+        { glm::vec3(-kCorner, -6.0f, -kCorner), glm::vec3(s, s*1.6f, s), faceIn(-kCorner, -kCorner) },
+        { glm::vec3( kCorner, -6.0f, -kCorner), glm::vec3(s, s*1.7f, s), faceIn( kCorner, -kCorner) },
+        { glm::vec3(-kCorner, -6.0f,  kCorner), glm::vec3(s, s*1.5f, s), faceIn(-kCorner,  kCorner) },
+        { glm::vec3( kCorner, -6.0f,  kCorner), glm::vec3(s, s*1.6f, s), faceIn( kCorner,  kCorner) },
+    };
 
     // --- PHYSICS (rain ripples) ---
     WaterSimulation water(kPhysicsGridSize, kPhysicsTileSize, kFixedDt, 8.0f, 0.998f);
@@ -260,6 +350,14 @@ int main() {
         }
         cKeyWasPressed = cKeyPressed;
 
+        // P — toggle vehicle movement on/off (debounced)
+        const bool pKeyDown = glfwGetKey(win, GLFW_KEY_P) == GLFW_PRESS;
+        if (pKeyDown && !pKeyWasDown) {
+            vehiclesMoving = !vehiclesMoving;
+            std::cout << "Vehicles: " << (vehiclesMoving ? "moving" : "stopped") << std::endl;
+        }
+        pKeyWasDown = pKeyDown;
+
         // Live ocean tuning (hold to ramp)
         const float kTuneRate = deltaTime * 3.0f;
         bool tuning = false;
@@ -284,6 +382,10 @@ int main() {
 
         if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS && !isRecording) {
             std::cout << "RECORDING STARTED!" << std::endl;
+            // Ensure the output dir exists (cross-platform). stbi_write_png
+            // silently fails if "frames/" is missing.
+            std::error_code ec;
+            std::filesystem::create_directories("frames", ec);
             isRecording = true;
             frameCount = 0;
         }
@@ -304,6 +406,20 @@ int main() {
             rainSystem.update(kFixedDt, camera.Position, &water);
             ocean.update(kFixedDt);
             disturbance.update(kFixedDt);
+
+            // Vehicles: advance along heading; if past the bay bound, turn back
+            // toward the centre so they stay on the water.
+            if (vehiclesMoving) {
+                for (Vehicle& v : vehicles) {
+                    glm::vec3 dir(std::sin(v.heading), 0.0f, std::cos(v.heading));
+                    v.pos += dir * v.speed * kFixedDt;
+                    float distXZ = std::sqrt(v.pos.x * v.pos.x + v.pos.z * v.pos.z);
+                    if (distXZ > kBayBound) {
+                        // steer heading toward the origin
+                        v.heading = std::atan2(-v.pos.x, -v.pos.z);
+                    }
+                }
+            }
             accumulator -= kFixedDt;
         }
 
@@ -313,7 +429,7 @@ int main() {
         const glm::mat4 projection = glm::perspective(
             glm::radians(45.0f),
             static_cast<float>(window.getWidth()) / static_cast<float>(window.getHeight()),
-            0.1f, 2000.0f
+            0.1f, 4000.0f
         );
         const glm::mat4 view = camera.GetViewMatrix();
 
@@ -349,6 +465,32 @@ int main() {
             shader.setInt("applyOceanDisplacement", 1);
             uploadRipples(shader, activeRipples);
             oceanMesh.draw(shader, camera.Position);
+
+            // --- OBJECTS (solid, depth-tested, before transparent skybox/rain) ---
+            objectShader.use();
+            objectShader.setMat4("projection", projection);
+            objectShader.setMat4("view", view);
+            objectShader.setVec3("viewPos", camera.Position);
+            objectShader.setVec3("baseColor", glm::vec3(0.42f, 0.40f, 0.38f)); // grey rock
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
+            rock.draw(objectShader);
+
+            // --- COASTAL CLIFFS: real scanned cliff, ringed + facing inward ---
+            for (const MountainInstance& m : mountains) {
+                coastalCliff.setPosition(m.pos);
+                coastalCliff.setScale(m.scale);
+                coastalCliff.setRotationY(m.rotY);
+                coastalCliff.draw(objectShader);
+            }
+
+            // --- VEHICLES: jet-ski / yacht / big-ship cruising the bay ---
+            for (const Vehicle& v : vehicles) {
+                v.model->setPosition(v.pos + glm::vec3(0.0f, v.yOffset, 0.0f));
+                v.model->setScale(v.scale);
+                v.model->setRotationY(v.heading + v.modelYaw);
+                v.model->draw(objectShader);
+            }
         }
 
         if (!wireframeMode) {

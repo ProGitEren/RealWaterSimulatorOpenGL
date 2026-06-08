@@ -9,6 +9,11 @@ set(SOURCES
     src/core/Window.cpp
     src/core/Camera.cpp
     src/graphics/Shader.cpp
+    src/graphics/Mesh.cpp
+    src/graphics/Model.cpp
+    src/graphics/Texture.cpp
+    src/graphics/RockGenerator.cpp
+    src/graphics/Terrain.cpp
     src/ocean/GPUFFTOcean.cpp
     src/ocean/OceanMesh.cpp
     src/ocean/GPUDisturbance.cpp

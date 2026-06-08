@@ -62,11 +62,11 @@ OceanMesh::~OceanMesh() {
 }
 
 void OceanMesh::draw(const Shader& shader, const glm::vec3& cameraPos) const {
-    // Snap center to tileSize grid — prevents FFT texture from swimming as camera moves
-    const float snapX = std::floor(cameraPos.x / m_tileSize) * m_tileSize;
-    const float snapZ = std::floor(cameraPos.z / m_tileSize) * m_tileSize;
-
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(snapX, 0.0f, snapZ));
+    // Fixed ocean: the water grid stays centred at the world origin (it does NOT
+    // follow the camera). This bounds the sea to the scene so it sits correctly
+    // inside the ring of coastal cliffs instead of sliding underneath them.
+    (void)cameraPos;
+    glm::mat4 model = glm::mat4(1.0f);
     shader.setMat4("model", model);
 
     // aNormal (location 1) is not in the VBO; provide a flat up-normal as the default
