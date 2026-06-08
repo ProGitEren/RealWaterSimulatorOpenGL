@@ -6,6 +6,8 @@
 #include <cmath>
 #include <random>
 #include <vector>
+#include <chrono>
+#include <cstring>
 
 namespace {
     constexpr unsigned int kMaxResolution = 1024;
@@ -73,6 +75,7 @@ GPUFFTOcean::~GPUFFTOcean() {
     glDeleteTextures(1, &m_spatialTextureB);
     glDeleteTextures(1, &m_displacementTexture);
     glDeleteTextures(1, &m_normalTexture);
+    glDeleteBuffers(2, m_pbo);
 }
 
 void GPUFFTOcean::configureTexture(unsigned int texture, GLenum internalFormat) const {
@@ -121,6 +124,17 @@ void GPUFFTOcean::initializeTextures() {
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(m_resolution), static_cast<GLsizei>(m_resolution), GL_RED, GL_FLOAT, initialPhase.data());
     glBindTexture(GL_TEXTURE_2D, m_phaseTextures[1]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(m_resolution), static_cast<GLsizei>(m_resolution), GL_RED, GL_FLOAT, initialPhase.data());
+
+    m_cpuDisplacement.assign(static_cast<size_t>(m_resolution) * m_resolution, glm::vec4(0.0f));
+
+    // Two pixel-pack buffers for asynchronous (non-stalling) displacement readback.
+    glGenBuffers(2, m_pbo);
+    const GLsizeiptr dispBytes = static_cast<GLsizeiptr>(m_resolution) * m_resolution * 4 * sizeof(float);
+    for (int i = 0; i < 2; ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, dispBytes, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
 
 void GPUFFTOcean::initializeNoiseTexture() {
@@ -280,4 +294,71 @@ void GPUFFTOcean::update(float deltaTime) {
     glBindImageTexture(0, m_normalTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
     glDispatchCompute(workgroups, workgroups, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+}
+
+void GPUFFTOcean::readbackDisplacement() {
+    // Pull the displacement texture back to the CPU for object height sampling.
+    // Call ONCE per render frame (after the fixed-step loop), NOT inside update().
+    //
+    // PBO double-buffer: a plain synchronous glGetTexImage blocks the CPU until
+    // the in-flight FFT dispatches finish (~15ms at speed) -> it tanked us to
+    // ~55fps. Instead we kick off an ASYNC copy into PBO[i] (returns immediately)
+    // and map PBO[other], which was filled LAST frame and is already resident.
+    // Cost: the height data is 1 frame stale -> negligible for buoyancy.
+    const GLsizeiptr bytes = static_cast<GLsizeiptr>(m_resolution) * m_resolution * 4 * sizeof(float);
+    const auto readbackStart = std::chrono::high_resolution_clock::now();
+
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+
+    // 1) Kick off this frame's async texture -> PBO copy (no CPU wait).
+    glBindTexture(GL_TEXTURE_2D, m_displacementTexture);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pboIndex]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, nullptr); // dest = bound PBO
+
+    // 2) Map last frame's PBO (already complete) and copy to the CPU mirror.
+    const unsigned int prev = m_pboIndex ^ 1u;
+    if (m_readbackCount > 0u) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[prev]);
+        void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+        if (mapped) {
+            std::memcpy(m_cpuDisplacement.data(), mapped, static_cast<size_t>(bytes));
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    m_pboIndex = prev;
+    ++m_readbackCount;
+
+    const auto readbackEnd = std::chrono::high_resolution_clock::now();
+    m_lastReadbackMs = std::chrono::duration<double, std::milli>(readbackEnd - readbackStart).count();
+}
+
+glm::vec3 GPUFFTOcean::sampleDisplacement(float worldX, float worldZ) const {
+    if (m_cpuDisplacement.empty()) return glm::vec3(0.0f);
+    const int N = static_cast<int>(m_resolution);
+    // Match standard.vert exactly: uv = worldXZ / oceanSize + 0.5, GL_REPEAT wrap,
+    // GL bilinear (texel centres at half-integers -> the -0.5 below).
+    const float u = worldX / m_oceanSize + 0.5f;
+    const float v = worldZ / m_oceanSize + 0.5f;
+    const float fx = u * static_cast<float>(N) - 0.5f;
+    const float fy = v * static_cast<float>(N) - 0.5f;
+    const int x0i = static_cast<int>(std::floor(fx));
+    const int y0i = static_cast<int>(std::floor(fy));
+    const float tx = fx - static_cast<float>(x0i);
+    const float ty = fy - static_cast<float>(y0i);
+    auto wrap = [N](int i) { i %= N; if (i < 0) i += N; return i; };
+    const int x0 = wrap(x0i), x1 = wrap(x0i + 1);
+    const int y0 = wrap(y0i), y1 = wrap(y0i + 1);
+    const glm::vec4& c00 = m_cpuDisplacement[static_cast<size_t>(y0) * N + x0];
+    const glm::vec4& c10 = m_cpuDisplacement[static_cast<size_t>(y0) * N + x1];
+    const glm::vec4& c01 = m_cpuDisplacement[static_cast<size_t>(y1) * N + x0];
+    const glm::vec4& c11 = m_cpuDisplacement[static_cast<size_t>(y1) * N + x1];
+    const glm::vec4 a = glm::mix(c00, c10, tx);
+    const glm::vec4 b = glm::mix(c01, c11, tx);
+    return glm::vec3(glm::mix(a, b, ty));
+}
+
+float GPUFFTOcean::sampleOceanHeight(float worldX, float worldZ) const {
+    return sampleDisplacement(worldX, worldZ).y;
 }

@@ -20,7 +20,7 @@ Model::Model(const std::vector<Vertex>& vertices, const std::vector<unsigned int
 glm::mat4 Model::modelMatrix() const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, m_position);
-    m = glm::rotate(m, m_rotationY, glm::vec3(0.0f, 1.0f, 0.0f));
+    m *= glm::mat4_cast(m_orientation);     // full orientation (was rotateY only)
     m = glm::scale(m, m_scale);
     return m;
 }

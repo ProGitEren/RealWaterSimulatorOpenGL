@@ -10,6 +10,10 @@
 #include "water/WaterSimulation.h"
 #include "water/RainSystem.h"
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 #include <iostream>
 #include <iomanip>
 #include <deque>
@@ -121,8 +125,16 @@ int main() {
 
     GLFWwindow* win = window.getGLFWWindow();
 
-    glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR);
+    glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+
+    // --- Dear ImGui ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(win, true);   // installs GLFW callbacks (app polls, so safe)
+    ImGui_ImplOpenGL3_Init("#version 460 core");
 
     Camera camera(glm::vec3(0.0f, 40.0f, 120.0f));
 
@@ -305,6 +317,13 @@ int main() {
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
+        // Start the ImGui frame; io.WantCapture* below gates app input so the
+        // panel doesn't drive the camera while you interact with it.
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        ImGuiIO& io = ImGui::GetIO();
+
         if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS)
             glfwSetWindowShouldClose(win, true);
 
@@ -332,13 +351,15 @@ int main() {
         kKeyWasPressed = kKeyPressed;
         lKeyWasPressed = lKeyPressed;
 
-        // Camera movement
-        if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(0, deltaTime);
-        if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(1, deltaTime);
-        if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(2, deltaTime);
-        if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(3, deltaTime);
-        if (glfwGetKey(win, GLFW_KEY_SPACE)      == GLFW_PRESS) camera.ProcessKeyboard(4, deltaTime);
-        if (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) camera.ProcessKeyboard(5, deltaTime);
+        // Camera movement (suppressed while ImGui is capturing the keyboard)
+        if (!io.WantCaptureKeyboard) {
+            if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(0, deltaTime);
+            if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(1, deltaTime);
+            if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(2, deltaTime);
+            if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(3, deltaTime);
+            if (glfwGetKey(win, GLFW_KEY_SPACE)      == GLFW_PRESS) camera.ProcessKeyboard(4, deltaTime);
+            if (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) camera.ProcessKeyboard(5, deltaTime);
+        }
 
         // C key — fire a GPU wave disturbance 40m in front of camera (debounced)
         const bool cKeyPressed = glfwGetKey(win, GLFW_KEY_C) == GLFW_PRESS;
@@ -390,11 +411,13 @@ int main() {
             frameCount = 0;
         }
 
-        // Mouse look
+        // Mouse look (suppressed while ImGui wants the mouse, e.g. dragging a
+        // slider; lastX/lastY still track so there's no jump when capture ends)
         double xpos, ypos;
         glfwGetCursorPos(win, &xpos, &ypos);
         if (firstMouse) { lastX = xpos; lastY = ypos; firstMouse = false; }
-        camera.ProcessMouseMovement(static_cast<float>(xpos - lastX), static_cast<float>(lastY - ypos));
+        if (!io.WantCaptureMouse)
+            camera.ProcessMouseMovement(static_cast<float>(xpos - lastX), static_cast<float>(lastY - ypos));
         lastX = xpos;
         lastY = ypos;
 
@@ -421,6 +444,30 @@ int main() {
                 }
             }
             accumulator -= kFixedDt;
+        }
+
+        // Read the ocean displacement back to the CPU ONCE per frame (after all
+        // fixed substeps) for object height sampling — see readbackDisplacement().
+        ocean.readbackDisplacement();
+
+        // --- ImGui control panel ---
+        {
+            ImGui::Begin("Controls");
+            ImGui::Text("%.1f FPS  (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
+            ImGui::Text("ocean readback: %.2f ms", ocean.getLastReadbackMs());
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Ocean", ImGuiTreeNodeFlags_DefaultOpen)) {
+                float wind = ocean.getWindSpeed();
+                if (ImGui::SliderFloat("wind speed",   &wind,       5.0f, 10.0f)) ocean.setWindSpeed(wind);
+                float heightScale = ocean.getHeightScale();
+                if (ImGui::SliderFloat("height scale", &heightScale, 0.1f, 4.0f)) ocean.setHeightScale(heightScale);
+                float chop = ocean.getChoppiness();
+                if (ImGui::SliderFloat("choppiness",   &chop,       0.0f, 2.5f))  ocean.setChoppiness(chop);
+                float timeScale = ocean.getTimeScale();
+                if (ImGui::SliderFloat("time scale",   &timeScale,  0.1f, 4.0f))  ocean.setTimeScale(timeScale);
+            }
+            ImGui::Checkbox("vehicles moving (P)", &vehiclesMoving);
+            ImGui::End();
         }
 
         // --- RENDER ---
@@ -533,9 +580,17 @@ int main() {
             }
         }
 
+        // Draw the ImGui panel on top of the scene, then present.
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         window.swapBuffers();
         window.pollEvents();
     }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     glDeleteBuffers(1, &skyboxVBO);
     glDeleteVertexArrays(1, &skyboxVAO);

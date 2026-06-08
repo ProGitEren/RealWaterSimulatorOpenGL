@@ -38,10 +38,20 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     src
     external
     external/glad/include
+    external/imgui
+    external/imgui/backends
 )
 
 target_sources(${PROJECT_NAME} PRIVATE
     external/glad/src/glad.c
+    # Dear ImGui (vendored v1.91.9) + GLFW/OpenGL3 backends
+    external/imgui/imgui.cpp
+    external/imgui/imgui_draw.cpp
+    external/imgui/imgui_tables.cpp
+    external/imgui/imgui_widgets.cpp
+    external/imgui/imgui_demo.cpp
+    external/imgui/backends/imgui_impl_glfw.cpp
+    external/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

@@ -4,6 +4,7 @@
 #include "../graphics/Shader.h"
 
 #include <glm/glm.hpp>
+#include <vector>
 
 class GPUFFTOcean {
 public:
@@ -29,6 +30,14 @@ public:
     void setChoppiness(float v)      { m_choppiness      = v; }
     void setTimeScale(float v)       { m_timeScale       = v; }
     void setWindSpeed(float v);
+
+    // CPU-side ocean-surface sampling (Phase 0B). The displacement texture is
+    // read back to the CPU once per update(); sampleOceanHeight returns the
+    // vertical wave height (metres) at a world XZ, matching the GPU surface.
+    void      readbackDisplacement();   // call ONCE per render frame (not per substep)
+    glm::vec3 sampleDisplacement(float worldX, float worldZ) const;
+    float     sampleOceanHeight(float worldX, float worldZ) const;
+    double    getLastReadbackMs() const { return m_lastReadbackMs; }
 
 private:
     unsigned int m_resolution;
@@ -69,6 +78,13 @@ private:
     unsigned int m_fftRowResultB = 0;
     unsigned int m_fftFinalA = 0;
     unsigned int m_fftFinalB = 0;
+
+    // CPU readback of the displacement texture: .x=dx, .y=height, .z=dz (metres).
+    std::vector<glm::vec4> m_cpuDisplacement;
+    double m_lastReadbackMs = 0.0;
+    unsigned int m_pbo[2] = { 0, 0 };   // double-buffered async readback (ping-pong)
+    unsigned int m_pboIndex = 0;
+    unsigned int m_readbackCount = 0;
 
     void initializeTextures();
     void initializeNoiseTexture();
