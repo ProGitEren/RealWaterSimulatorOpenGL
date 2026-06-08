@@ -37,6 +37,7 @@ public:
     void      readbackDisplacement();   // call ONCE per render frame (not per substep)
     glm::vec3 sampleDisplacement(float worldX, float worldZ) const;
     float     sampleOceanHeight(float worldX, float worldZ) const;
+    glm::vec3 sampleOceanNormal(float worldX, float worldZ) const;
     double    getLastReadbackMs() const { return m_lastReadbackMs; }
 
 private:

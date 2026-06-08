@@ -362,3 +362,13 @@ glm::vec3 GPUFFTOcean::sampleDisplacement(float worldX, float worldZ) const {
 float GPUFFTOcean::sampleOceanHeight(float worldX, float worldZ) const {
     return sampleDisplacement(worldX, worldZ).y;
 }
+
+glm::vec3 GPUFFTOcean::sampleOceanNormal(float worldX, float worldZ) const {
+    // Central-difference the height field over a boat-scale span (metres).
+    const float d  = 2.0f;
+    const float hL = sampleOceanHeight(worldX - d, worldZ);
+    const float hR = sampleOceanHeight(worldX + d, worldZ);
+    const float hD = sampleOceanHeight(worldX, worldZ - d);
+    const float hU = sampleOceanHeight(worldX, worldZ + d);
+    return glm::normalize(glm::vec3(-(hR - hL) / (2.0f * d), 1.0f, -(hU - hD) / (2.0f * d)));
+}

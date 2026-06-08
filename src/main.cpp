@@ -28,6 +28,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
@@ -307,6 +308,8 @@ int main() {
     const int screenWidth  = 1024;
     const int screenHeight = 768;
 
+    float buoyancyTilt = 0.6f; // how strongly floaters lean to the wave normal (0=flat, 1=full)
+
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -466,6 +469,9 @@ int main() {
                 float timeScale = ocean.getTimeScale();
                 if (ImGui::SliderFloat("time scale",   &timeScale,  0.1f, 4.0f))  ocean.setTimeScale(timeScale);
             }
+            if (ImGui::CollapsingHeader("Buoyancy", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SliderFloat("wave tilt", &buoyancyTilt, 0.0f, 1.0f);
+            }
             ImGui::Checkbox("vehicles moving (P)", &vehiclesMoving);
             ImGui::End();
         }
@@ -531,11 +537,21 @@ int main() {
                 coastalCliff.draw(objectShader);
             }
 
-            // --- VEHICLES: jet-ski / yacht / big-ship cruising the bay ---
+            // --- VEHICLES: jet-ski / yacht / big-ship riding the waves ---
             for (const Vehicle& v : vehicles) {
-                v.model->setPosition(v.pos + glm::vec3(0.0f, v.yOffset, 0.0f));
+                // Float: sit on the ocean surface (1-frame-stale readback) + freeboard.
+                const float surfH = ocean.sampleOceanHeight(v.pos.x, v.pos.z);
+                v.model->setPosition(glm::vec3(v.pos.x, surfH + v.yOffset, v.pos.z));
                 v.model->setScale(v.scale);
-                v.model->setRotationY(v.heading + v.modelYaw);
+
+                // Orient: heading yaw first, then tilt the hull to the wave normal.
+                const glm::quat yaw  = glm::angleAxis(v.heading + v.modelYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+                const glm::vec3 up(0.0f, 1.0f, 0.0f);
+                const glm::vec3 n    = glm::normalize(glm::mix(up, ocean.sampleOceanNormal(v.pos.x, v.pos.z), buoyancyTilt));
+                const glm::vec3 axis = glm::cross(up, n);
+                const float     dot  = glm::dot(up, n);
+                const glm::quat tilt = glm::normalize(glm::quat(1.0f + dot, axis.x, axis.y, axis.z));
+                v.model->setOrientation(tilt * yaw);
                 v.model->draw(objectShader);
             }
         }
