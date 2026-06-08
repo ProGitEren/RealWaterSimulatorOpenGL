@@ -309,6 +309,7 @@ int main() {
     const int screenHeight = 768;
 
     float buoyancyTilt = 0.6f; // how strongly floaters lean to the wave normal (0=flat, 1=full)
+    float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
 
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -444,6 +445,12 @@ int main() {
                         // steer heading toward the origin
                         v.heading = std::atan2(-v.pos.x, -v.pos.z);
                     }
+
+                    // Wake: inject a small ripple at the hull each fixed step;
+                    // repeated along the path it lays down a trail. Amplitude
+                    // scales with speed, far below the 3.0 C-key burst.
+                    disturbance.disturb(glm::vec2(v.pos.x, v.pos.z),
+                                        wakeStrength * glm::min(1.0f, v.speed / 12.0f));
                 }
             }
             accumulator -= kFixedDt;
@@ -471,6 +478,9 @@ int main() {
             }
             if (ImGui::CollapsingHeader("Buoyancy", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SliderFloat("wave tilt", &buoyancyTilt, 0.0f, 1.0f);
+            }
+            if (ImGui::CollapsingHeader("Wakes", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SliderFloat("wake strength", &wakeStrength, 0.0f, 0.05f);
             }
             ImGui::Checkbox("vehicles moving (P)", &vehiclesMoving);
             ImGui::End();
