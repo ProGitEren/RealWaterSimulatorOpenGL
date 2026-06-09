@@ -367,6 +367,7 @@ int main() {
     float buoyancyResponse = 2.0f; // heave damping (higher = settles faster, less bobbing)
     float angularDamp      = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
     float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
+    bool  showCenterRock = true; // draw + collide the lone central rock (UI toggle)
     // --- Navigation realism (gradual turns, gentle wander, banking) ---
     float boatTurnRate = 0.45f; // max steer-back turn rate (rad/s) — gradual, not a snap
     float boatWander   = 0.12f; // gentle heading-weave amplitude so paths curve naturally
@@ -585,8 +586,8 @@ int main() {
                         if (dd > 1e-3f && dd < keep)
                             desired += (d / dd) * ((1.0f - dd / keep) * 2.2f);
                     }
-                    // (c) Central rock.
-                    {
+                    // (c) Central rock (skip when the rock is toggled off).
+                    if (showCenterRock) {
                         glm::vec2 d = p - kRockXZ;
                         float dd = glm::length(d);
                         float keep = kRockAvoid + ri;
@@ -656,9 +657,11 @@ int main() {
                 for (Vehicle& v : vehicles) {                       // then containment has final say
                     glm::vec2 p(v.pos.x, v.pos.z);
                     const float ri = v.hullLength * 0.5f;
-                    glm::vec2 rd = p - kRockXZ;                     // never enter the rock
-                    float rl = glm::length(rd), rcap = kRockHard + ri;
-                    if (rl < rcap && rl > 1e-3f) { p = kRockXZ + (rd / rl) * rcap; }
+                    if (showCenterRock) {                          // never enter the rock
+                        glm::vec2 rd = p - kRockXZ;
+                        float rl = glm::length(rd), rcap = kRockHard + ri;
+                        if (rl < rcap && rl > 1e-3f) { p = kRockXZ + (rd / rl) * rcap; }
+                    }
                     float d = glm::length(p), cap = kHullLimit - ri; // never past the hull limit
                     if (d > cap && d > 1e-3f) { p *= cap / d; }
                     v.pos.x = p.x; v.pos.z = p.y;
@@ -777,6 +780,9 @@ int main() {
                     ImGui::PopID();
                 }
             }
+            if (ImGui::CollapsingHeader("Scene")) {
+                ImGui::Checkbox("Central rock", &showCenterRock);
+            }
             ImGui::End();
         }
 
@@ -853,7 +859,7 @@ int main() {
             objectShader.setVec3("baseColor", glm::vec3(0.42f, 0.40f, 0.38f)); // grey rock
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-            rock.draw(objectShader);
+            if (showCenterRock) rock.draw(objectShader);
 
             // --- COASTAL CLIFFS: real scanned cliff, ringed + facing inward ---
             for (const MountainInstance& m : mountains) {
