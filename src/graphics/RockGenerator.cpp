@@ -36,6 +36,19 @@ namespace {
         cache[key] = idx;
         return idx;
     }
+
+    // --- noise-displacement tuning (shapes the rocky surface) ---
+    constexpr float kSeedScatterX     = 13.13f;
+    constexpr float kSeedScatterY     = 7.77f;
+    constexpr float kSeedScatterZ     = 3.33f;
+    constexpr float kNoiseBaseFreq    = 2.3f;  // base sampling frequency
+    constexpr float kOctaveAmp0       = 0.50f; // per-octave amplitudes
+    constexpr float kOctaveAmp1       = 0.25f;
+    constexpr float kOctaveAmp2       = 0.13f;
+    constexpr float kOctaveFreq1      = 2.1f;  // per-octave frequency multipliers
+    constexpr float kOctaveFreq2      = 4.3f;
+    constexpr float kDisplacementGain = 0.45f; // how far noise pushes the radius
+    constexpr float kVerticalSquash   = 0.8f;  // flatten Y so it sits like a boulder
 }
 
 void generateRock(unsigned int subdivisions, unsigned int seed,
@@ -61,17 +74,17 @@ void generateRock(unsigned int subdivisions, unsigned int seed,
     }
 
     // Displace each unit-sphere vertex by layered simplex noise to make it rocky.
-    glm::vec3 seedOffset(float(seed) * 13.13f, float(seed) * 7.77f, float(seed) * 3.33f);
+    glm::vec3 seedOffset(float(seed) * kSeedScatterX, float(seed) * kSeedScatterY, float(seed) * kSeedScatterZ);
     for (auto& v : verts) {
-        glm::vec3 p = v * 2.3f + seedOffset;
+        glm::vec3 p = v * kNoiseBaseFreq + seedOffset;
         float n = 0.0f;
-        n += 0.50f * glm::simplex(p);
-        n += 0.25f * glm::simplex(p * 2.1f);
-        n += 0.13f * glm::simplex(p * 4.3f);
+        n += kOctaveAmp0 * glm::simplex(p);
+        n += kOctaveAmp1 * glm::simplex(p * kOctaveFreq1);
+        n += kOctaveAmp2 * glm::simplex(p * kOctaveFreq2);
         // Squash vertically a touch so it sits like a boulder, not a ball.
-        float radius = 1.0f + 0.45f * n;
+        float radius = 1.0f + kDisplacementGain * n;
         v *= radius;
-        v.y *= 0.8f;
+        v.y *= kVerticalSquash;
     }
 
     // Build vertices with placeholder normals, accumulate face normals.

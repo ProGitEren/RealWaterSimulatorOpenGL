@@ -3,6 +3,15 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+    constexpr float kMaxStepSeconds      = 1.0f / 30.0f; // clamp big steps for stability
+    constexpr float kHeaveStiffnessScale = 3.0f;         // buoyancy slider -> heave spring firmness
+    constexpr float kAngularStiffness    = 6.0f;         // pitch/roll spring stiffness
+    constexpr float kCriticalDampFactor  = 2.0f;         // 2*zeta term for critical damping
+    constexpr float kSlopeEps            = 1e-3f;        // guard tiny lever denominators
+    constexpr float kMaxTiltRad          = 0.6f;         // clamp tilt (~34 deg) so waves can't flip
+}
+
 void BoatPhysics::step(float dt, const glm::vec3& fixedXZ, float yaw,
                        const std::function<float(float, float)>& heightAt) {
     // Navigation (XZ + yaw) is scripted by the caller; the physics solves the
@@ -19,7 +28,7 @@ void BoatPhysics::step(float dt, const glm::vec3& fixedXZ, float yaw,
     position.x = fixedXZ.x;
     position.z = fixedXZ.z;
 
-    dt = std::clamp(dt, 0.0f, 1.0f / 30.0f); // clamp big steps for stability
+    dt = std::clamp(dt, 0.0f, kMaxStepSeconds);
 
     // Current orientation = yaw, then pitch (local X), then roll (local Z).
     const glm::quat yawQ = glm::angleAxis(yaw, glm::vec3(0, 1, 0));
@@ -59,28 +68,27 @@ void BoatPhysics::step(float dt, const glm::vec3& fixedXZ, float yaw,
 
     // --- HEAVE: critically-damped spring toward the average surface height ---
     // accel = stiffness*(target - y) - damping*vel  (stable, always floats).
-    float stiffness = buoyancy * 3.0f;              // buoyancy slider scales firmness
-    float heaveAccel = stiffness * (avgH - position.y) - 2.0f * linearDamp * heaveVel;
+    float stiffness = buoyancy * kHeaveStiffnessScale; // buoyancy slider scales firmness
+    float heaveAccel = stiffness * (avgH - position.y) - kCriticalDampFactor * linearDamp * heaveVel;
     heaveVel += heaveAccel * dt;
     position.y += heaveVel * dt;
 
     // --- PITCH / ROLL: target angle from the surface slope across the hull ---
     // slope_fore = d(height)/d(forward); nose follows the water -> pitch = -slope.
-    float slopeFwd  = (fwdDen  > 1e-3f) ? fwdNum  / fwdDen  : 0.0f;
-    float slopeSide = (sideDen > 1e-3f) ? sideNum / sideDen : 0.0f;
+    float slopeFwd  = (fwdDen  > kSlopeEps) ? fwdNum  / fwdDen  : 0.0f;
+    float slopeSide = (sideDen > kSlopeEps) ? sideNum / sideDen : 0.0f;
     float targetPitch = -std::atan(slopeFwd);
     float targetRoll  =  std::atan(slopeSide);
 
     // critically-damped spring toward the target tilt (smooth, no sink)
-    float angStiff = 6.0f;
-    pitchVel += (angStiff * (targetPitch - pitch) - 2.0f * angularDamp * pitchVel) * dt;
-    rollVel  += (angStiff * (targetRoll  - roll)  - 2.0f * angularDamp * rollVel)  * dt;
+    pitchVel += (kAngularStiffness * (targetPitch - pitch) - kCriticalDampFactor * angularDamp * pitchVel) * dt;
+    rollVel  += (kAngularStiffness * (targetRoll  - roll)  - kCriticalDampFactor * angularDamp * rollVel)  * dt;
     pitch += pitchVel * dt;
     roll  += rollVel  * dt;
 
     // Clamp tilt so a violent wave can't flip the boat.
-    pitch = std::clamp(pitch, -0.6f, 0.6f);
-    roll  = std::clamp(roll,  -0.6f, 0.6f);
+    pitch = std::clamp(pitch, -kMaxTiltRad, kMaxTiltRad);
+    roll  = std::clamp(roll,  -kMaxTiltRad, kMaxTiltRad);
 
     orientation = glm::normalize(yawQ
                 * glm::angleAxis(pitch, glm::vec3(1, 0, 0))
