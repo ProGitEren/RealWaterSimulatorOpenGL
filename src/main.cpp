@@ -88,14 +88,20 @@ namespace {
     // 256 entries = 256 loop iterations per fragment — safe budget.
     // SSBO avoids the constant-register limit that blocked uniform arrays.
     constexpr int           kMaxRipples       = 512;
+    // Window framebuffer size (also used by the recording / readback path).
+    constexpr int           kWindowWidth      = 1024;
+    constexpr int           kWindowHeight     = 768;
+    // Disturbance (wake/ripple) map resolution — must match the GPUDisturbance
+    // ctor below and the 256.0 divisor in standard.frag.
+    constexpr unsigned int  kDisturbResolution = 256;
 
     GLuint rippleSSBO = 0;
-    glm::vec4 rippleStagingBuf[512]; // pre-allocated, no heap alloc per frame
+    glm::vec4 rippleStagingBuf[kMaxRipples]; // pre-allocated, no heap alloc per frame
 
     void initRippleSSBO() {
         glGenBuffers(1, &rippleSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, rippleSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, 512 * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, kMaxRipples * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, rippleSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
@@ -120,7 +126,7 @@ namespace {
 
 
 int main() {
-    Window window(1024, 768, "Real-Time Water Simulator");
+    Window window(kWindowWidth, kWindowHeight, "Real-Time Water Simulator");
     if (!window.getGLFWWindow()) return -1;
 
     GLFWwindow* win = window.getGLFWWindow();
@@ -205,7 +211,7 @@ int main() {
     // --- OCEAN ---
     GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 15.0f, 35.0f, 2.0f);
     OceanMesh      oceanMesh(kOceanMeshRes, kOceanMeshTile);
-    GPUDisturbance disturbance(256u, kOceanMeshRes * kOceanMeshTile);
+    GPUDisturbance disturbance(kDisturbResolution, kOceanMeshRes * kOceanMeshTile);
 
     // --- OBJECTS ---
     // Poly Haven marble cliff (glTF + PBR textures). The procedural rock
@@ -300,16 +306,16 @@ int main() {
     // kFaceOffset flips it if this scan happens to face outward.
     const float kFaceOffset = 0.0f;   // set to 3.14159f if faces point outward
     auto faceIn = [&](float px, float pz) { return std::atan2(-px, -pz) + kFaceOffset; };
-    const float s = 9.0f;             // base scale (~87m -> ~780m wide cliffs)
+    const float kCliffScale = 9.0f;   // base scale (~87m -> ~780m wide cliffs)
     const std::vector<MountainInstance> mountains = {
-        { glm::vec3(    0.0f, -6.0f, -kEdge),  glm::vec3(s, s*1.6f, s), faceIn(0.0f, -kEdge) },
-        { glm::vec3(    0.0f, -6.0f,  kEdge),  glm::vec3(s, s*1.5f, s), faceIn(0.0f,  kEdge) },
-        { glm::vec3(-kEdge,   -6.0f,    0.0f), glm::vec3(s, s*1.7f, s), faceIn(-kEdge, 0.0f) },
-        { glm::vec3( kEdge,   -6.0f,    0.0f), glm::vec3(s, s*1.5f, s), faceIn( kEdge, 0.0f) },
-        { glm::vec3(-kCorner, -6.0f, -kCorner), glm::vec3(s, s*1.6f, s), faceIn(-kCorner, -kCorner) },
-        { glm::vec3( kCorner, -6.0f, -kCorner), glm::vec3(s, s*1.7f, s), faceIn( kCorner, -kCorner) },
-        { glm::vec3(-kCorner, -6.0f,  kCorner), glm::vec3(s, s*1.5f, s), faceIn(-kCorner,  kCorner) },
-        { glm::vec3( kCorner, -6.0f,  kCorner), glm::vec3(s, s*1.6f, s), faceIn( kCorner,  kCorner) },
+        { glm::vec3(    0.0f, -6.0f, -kEdge),  glm::vec3(kCliffScale, kCliffScale*1.6f, kCliffScale), faceIn(0.0f, -kEdge) },
+        { glm::vec3(    0.0f, -6.0f,  kEdge),  glm::vec3(kCliffScale, kCliffScale*1.5f, kCliffScale), faceIn(0.0f,  kEdge) },
+        { glm::vec3(-kEdge,   -6.0f,    0.0f), glm::vec3(kCliffScale, kCliffScale*1.7f, kCliffScale), faceIn(-kEdge, 0.0f) },
+        { glm::vec3( kEdge,   -6.0f,    0.0f), glm::vec3(kCliffScale, kCliffScale*1.5f, kCliffScale), faceIn( kEdge, 0.0f) },
+        { glm::vec3(-kCorner, -6.0f, -kCorner), glm::vec3(kCliffScale, kCliffScale*1.6f, kCliffScale), faceIn(-kCorner, -kCorner) },
+        { glm::vec3( kCorner, -6.0f, -kCorner), glm::vec3(kCliffScale, kCliffScale*1.7f, kCliffScale), faceIn( kCorner, -kCorner) },
+        { glm::vec3(-kCorner, -6.0f,  kCorner), glm::vec3(kCliffScale, kCliffScale*1.5f, kCliffScale), faceIn(-kCorner,  kCorner) },
+        { glm::vec3( kCorner, -6.0f,  kCorner), glm::vec3(kCliffScale, kCliffScale*1.6f, kCliffScale), faceIn( kCorner,  kCorner) },
     };
 
     // Place boats at safe, non-overlapping spawn points inside the play area and
@@ -338,8 +344,8 @@ int main() {
     // --- LOOP STATE ---
     float deltaTime = 0.0f;
     float lastFrame = 0.0f;
-    double lastX = 1024.0 / 2.0;
-    double lastY = 768.0 / 2.0;
+    double lastX = kWindowWidth / 2.0;
+    double lastY = kWindowHeight / 2.0;
     bool firstMouse = true;
     bool mouseCaptured = false; // first-person capture: hidden + locked cursor, free-look
     bool escWasPressed = false;
@@ -354,14 +360,12 @@ int main() {
 
     bool isRecording = false;
     int  frameCount  = 0;
-    const int MAX_FRAMES   = 600;
-    const int screenWidth  = 1024;
-    const int screenHeight = 768;
+    const int kMaxFrames = 600;
 
     // --- Force-based buoyancy tuning (applied to every vehicle each frame) ---
     float buoyancyStrength = 3.0f; // up-force per metre submerged (higher = floats higher/firmer)
     float buoyancyResponse = 2.0f; // heave damping (higher = settles faster, less bobbing)
-    float angularDamp      = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
+    float pitchRollDamp    = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
     float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
     bool  showCenterRock = true; // draw + collide the lone central rock (UI toggle)
     // --- Navigation realism (gradual turns, gentle wander, banking) ---
@@ -622,7 +626,7 @@ int main() {
                     // tracks the hull's beam: a tight ripple for the jet-ski, a broad
                     // swell for the ship — instead of one 20 m bump that engulfs the
                     // little boats.
-                    const float kTexelM   = (kOceanMeshRes * kOceanMeshTile) / 256.0f; // ~4 m
+                    const float kTexelM   = (kOceanMeshRes * kOceanMeshTile) / static_cast<float>(kDisturbResolution); // ~4 m
                     float sigmaTexels = glm::clamp(v.wakeWidth / kTexelM, 1.5f, 5.0f);
                     float sigmaM      = sigmaTexels * kTexelM;
 
@@ -684,7 +688,7 @@ int main() {
             for (Vehicle& v : vehicles) {
                 v.phys.buoyancy    = buoyancyStrength;
                 v.phys.linearDamp  = buoyancyResponse;
-                v.phys.angularDamp = angularDamp;
+                v.phys.angularDamp = pitchRollDamp;
                 v.phys.step(deltaTime, v.pos, v.heading + v.modelYaw, surfFn);
             }
         }
@@ -906,20 +910,20 @@ int main() {
 
         // Recording
         if (isRecording) {
-            unsigned char* pixels        = new unsigned char[screenWidth * screenHeight * 3];
-            unsigned char* flippedPixels = new unsigned char[screenWidth * screenHeight * 3];
-            glReadPixels(0, 0, screenWidth, screenHeight, GL_RGB, GL_UNSIGNED_BYTE, pixels);
-            for (int y = 0; y < screenHeight; ++y) {
-                memcpy(flippedPixels + (screenHeight - 1 - y) * screenWidth * 3,
-                       pixels        + y * screenWidth * 3,
-                       screenWidth * 3);
+            unsigned char* pixels        = new unsigned char[kWindowWidth * kWindowHeight * 3];
+            unsigned char* flippedPixels = new unsigned char[kWindowWidth * kWindowHeight * 3];
+            glReadPixels(0, 0, kWindowWidth, kWindowHeight, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+            for (int y = 0; y < kWindowHeight; ++y) {
+                memcpy(flippedPixels + (kWindowHeight - 1 - y) * kWindowWidth * 3,
+                       pixels        + y * kWindowWidth * 3,
+                       kWindowWidth * 3);
             }
             std::string filename = "frames/frame_" + std::to_string(frameCount) + ".png";
-            stbi_write_png(filename.c_str(), screenWidth, screenHeight, 3, flippedPixels, screenWidth * 3);
+            stbi_write_png(filename.c_str(), kWindowWidth, kWindowHeight, 3, flippedPixels, kWindowWidth * 3);
             delete[] pixels;
             delete[] flippedPixels;
 
-            if (++frameCount >= MAX_FRAMES) {
+            if (++frameCount >= kMaxFrames) {
                 isRecording = false;
                 std::cout << "RECORDING FINISHED!" << std::endl;
             }
