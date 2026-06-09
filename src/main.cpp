@@ -293,7 +293,9 @@ int main() {
     // (edges AND corners) is covered by overlapping land — the hard tile edge is
     // never visible.
     const float kEdge   = 470.0f;     // edge-piece distance (just inside ±512)
-    const float kCorner = 470.0f;     // corner-piece axial offset -> sits at ±470,±470
+    const float kCorner = kEdge * 0.7071f; // corner pieces at the SAME radius as the edges
+                                           // (axial ~332) so the ring is uniform — no
+                                           // diagonal gaps/void between water and cliffs
     // The model's cliff face points along its local +Z. To aim that face from a
     // ring position (px,pz) back at the origin, rotate by atan2(-px,-pz).
     // kFaceOffset flips it if this scan happens to face outward.
