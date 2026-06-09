@@ -61,11 +61,10 @@ OceanMesh::~OceanMesh() {
     glDeleteBuffers(1, &m_ebo);
 }
 
-void OceanMesh::draw(const Shader& shader, const glm::vec3& cameraPos) const {
+void OceanMesh::draw(const Shader& shader) const {
     // Fixed ocean: the water grid stays centred at the world origin (it does NOT
     // follow the camera). This bounds the sea to the scene so it sits correctly
     // inside the ring of coastal cliffs instead of sliding underneath them.
-    (void)cameraPos;
     glm::mat4 model = glm::mat4(1.0f);
     shader.setMat4("model", model);
 

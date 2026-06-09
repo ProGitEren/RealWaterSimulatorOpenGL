@@ -3,7 +3,6 @@
 #include "graphics/Shader.h"
 #include "graphics/Model.h"
 #include "graphics/RockGenerator.h"
-#include "graphics/Texture.h"
 #include "ocean/GPUFFTOcean.h"
 #include "ocean/GPUDisturbance.h"
 #include "ocean/OceanMesh.h"
@@ -268,9 +267,6 @@ int main() {
         v.phys.beam   = v.wakeWidth * 2.0f;
         v.phys.floatHeight = v.yOffset;
     }
-    // Jet-ski is small/light → snappier; big ship → heavier/slower response.
-    vehicles[0].phys.linearDamp = 3.5f; vehicles[0].phys.angularDamp = 4.0f;
-    vehicles[2].phys.linearDamp = 1.6f; vehicles[2].phys.angularDamp = 2.4f;
 
     bool vehiclesMoving = true;   // toggled by P
     bool pKeyWasDown    = false;
@@ -815,7 +811,7 @@ int main() {
             debugWireframeShader.setFloat("oceanSize", ocean.getOceanSize());
             debugWireframeShader.setFloat("floorY", -10000.0f);
             debugWireframeShader.setInt("applyOceanDisplacement", 1);
-            oceanMesh.draw(debugWireframeShader, camera.Position);
+            oceanMesh.draw(debugWireframeShader);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         } else {
             shader.use();
@@ -849,7 +845,7 @@ int main() {
                 shader.setFloat("uExposure",          hdrExposure);
             }
             uploadRipples(shader, activeRipples);
-            oceanMesh.draw(shader, camera.Position);
+            oceanMesh.draw(shader);
 
             // --- OBJECTS (solid, depth-tested, before transparent skybox/rain) ---
             objectShader.use();
@@ -904,7 +900,7 @@ int main() {
 
             // Rain after skybox — GPU instanced draw (streaks + splashes, SSBO).
             rainSystem.render(rainShader, rainSplashShader, projection, view,
-                              rainWindDrift, rainFallSpeed, rainDropSize,
+                              rainWindDrift, rainDropSize,
                               rainOpacity, rainSplashHeight);
         }
 

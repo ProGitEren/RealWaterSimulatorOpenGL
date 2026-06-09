@@ -33,21 +33,12 @@ public:
     // spin can compose on top instead of a separate yaw float fighting them.
     void setRotationY(float radians)        { m_orientation = glm::angleAxis(radians, glm::vec3(0.0f, 1.0f, 0.0f)); }
     void setOrientation(const glm::quat& q) { m_orientation = q; }
-    void setRotation(const glm::vec3& eulerRadians) { m_orientation = glm::quat(eulerRadians); }
-    glm::quat getOrientation() const        { return m_orientation; }
-    glm::vec3 getPosition() const           { return m_position; }
     // Local-space AABB centre of the loaded mesh (0 if empty). Used to align the
     // boat wake (and other effects) to the VISIBLE hull centre when a model's
     // mesh sits off its glTF origin.
     glm::vec3 localCenter() const {
         return (m_aabbMax.x < m_aabbMin.x) ? glm::vec3(0.0f) : (m_aabbMin + m_aabbMax) * 0.5f;
     }
-
-    // Per-mesh material access (m_meshes is otherwise private). Lets callers tint
-    // or retexture an object after load (rock texture sets, boat hull tint, etc.).
-    Mesh&  meshAt(size_t i)                 { return m_meshes[i]; }
-    size_t meshCount() const                { return m_meshes.size(); }
-    void   setMaterial(const Material& mat) { for (Mesh& mesh : m_meshes) mesh.material = mat; }
 
     glm::mat4 modelMatrix() const;
 

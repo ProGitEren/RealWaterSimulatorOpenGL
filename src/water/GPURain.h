@@ -28,7 +28,7 @@ public:
     // (two draw calls, both reading the same SSBO — no CPU vertex work).
     void render(Shader& streakShader, Shader& splashShader,
                 const glm::mat4& proj, const glm::mat4& view,
-                glm::vec2 windDrift, float fallSpeed, float dropSize,
+                glm::vec2 windDrift, float dropSize,
                 float opacity, float splashHeight);
 
     const std::deque<glm::vec3>& getActiveRipples() const { return m_ripples; }

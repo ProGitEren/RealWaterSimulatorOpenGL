@@ -9,7 +9,7 @@ public:
     OceanMesh(int resolution, float tileSize);
     ~OceanMesh();
 
-    void draw(const Shader& shader, const glm::vec3& cameraPos) const;
+    void draw(const Shader& shader) const;
 
     float getWorldSize() const { return static_cast<float>(m_resolution) * m_tileSize; }
 

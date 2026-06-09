@@ -85,7 +85,7 @@ void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
 
 void GPURain::render(Shader& streakShader, Shader& splashShader,
                      const glm::mat4& proj, const glm::mat4& view,
-                     glm::vec2 windDrift, float fallSpeed, float dropSize,
+                     glm::vec2 windDrift, float dropSize,
                      float opacity, float splashHeight) {
     if (m_activeCount == 0) return;
 
@@ -98,7 +98,6 @@ void GPURain::render(Shader& streakShader, Shader& splashShader,
     streakShader.setMat4 ("projection", proj);
     streakShader.setMat4 ("view", view);
     streakShader.setVec2 ("uWindDrift", windDrift);
-    streakShader.setFloat("uFallSpeed", fallSpeed);
     streakShader.setFloat("uDropSize", dropSize);
     streakShader.setFloat("uOpacity", opacity);
     glLineWidth(std::clamp(dropSize * 1.5f, 1.0f, 6.0f));

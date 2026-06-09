@@ -6,25 +6,15 @@
 #include <cmath>
 #include <random>
 #include <vector>
-#include <chrono>
 #include <cstring>
 
 namespace {
     constexpr unsigned int kMaxResolution = 1024;
     constexpr float kPi = 3.14159265359f;
-
-    unsigned int nextPowerOfTwoLog(unsigned int value) {
-        unsigned int result = 0;
-        while ((1u << result) < value) {
-            ++result;
-        }
-        return result;
-    }
 }
 
 GPUFFTOcean::GPUFFTOcean(unsigned int resolution, float oceanSize, float windSpeed, float windAngleDegrees, float choppiness)
     : m_resolution(resolution),
-      m_log2Resolution(nextPowerOfTwoLog(resolution)),
       m_oceanSize(oceanSize),
       m_windSpeed(windSpeed),
       m_windAngleDegrees(windAngleDegrees),
@@ -327,7 +317,6 @@ void GPUFFTOcean::readbackDisplacement() {
     // and map PBO[other], which was filled LAST frame and is already resident.
     // Cost: the height data is 1 frame stale -> negligible for buoyancy.
     const GLsizeiptr bytes = static_cast<GLsizeiptr>(m_resolution) * m_resolution * 4 * sizeof(float);
-    const auto readbackStart = std::chrono::high_resolution_clock::now();
 
     glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
 
@@ -350,9 +339,6 @@ void GPUFFTOcean::readbackDisplacement() {
 
     m_pboIndex = prev;
     ++m_readbackCount;
-
-    const auto readbackEnd = std::chrono::high_resolution_clock::now();
-    m_lastReadbackMs = std::chrono::duration<double, std::milli>(readbackEnd - readbackStart).count();
 }
 
 glm::vec3 GPUFFTOcean::sampleDisplacement(float worldX, float worldZ) const {
@@ -380,20 +366,6 @@ glm::vec3 GPUFFTOcean::sampleDisplacement(float worldX, float worldZ) const {
     return glm::vec3(glm::mix(a, b, ty));
 }
 
-float GPUFFTOcean::sampleOceanHeight(float worldX, float worldZ) const {
-    return sampleDisplacement(worldX, worldZ).y;
-}
-
-glm::vec3 GPUFFTOcean::sampleOceanNormal(float worldX, float worldZ) const {
-    // Central-difference the height field over a boat-scale span (metres).
-    const float d  = 2.0f;
-    const float hL = sampleOceanHeight(worldX - d, worldZ);
-    const float hR = sampleOceanHeight(worldX + d, worldZ);
-    const float hD = sampleOceanHeight(worldX, worldZ - d);
-    const float hU = sampleOceanHeight(worldX, worldZ + d);
-    return glm::normalize(glm::vec3(-(hR - hL) / (2.0f * d), 1.0f, -(hU - hD) / (2.0f * d)));
-}
-
 float GPUFFTOcean::sampleSurfaceHeight(float worldX, float worldZ) const {
     // The vertex shader maps grid point g -> world (g + disp.xz, disp.y). We want
     // the height of whichever grid point landed at the *visual* world (X,Z), i.e.
@@ -406,15 +378,4 @@ float GPUFFTOcean::sampleSurfaceHeight(float worldX, float worldZ) const {
         gz = worldZ - d.z;
     }
     return sampleDisplacement(gx, gz).y;
-}
-
-glm::vec3 GPUFFTOcean::sampleSurfaceNormal(float worldX, float worldZ) const {
-    // Same central-difference, but on the choppiness-corrected surface height so
-    // the slope matches what is actually drawn under the object.
-    const float d  = 2.0f;
-    const float hL = sampleSurfaceHeight(worldX - d, worldZ);
-    const float hR = sampleSurfaceHeight(worldX + d, worldZ);
-    const float hD = sampleSurfaceHeight(worldX, worldZ - d);
-    const float hU = sampleSurfaceHeight(worldX, worldZ + d);
-    return glm::normalize(glm::vec3(-(hR - hL) / (2.0f * d), 1.0f, -(hU - hD) / (2.0f * d)));
 }

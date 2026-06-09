@@ -8,7 +8,6 @@ layout(std430, binding = 0) readonly buffer DropBuffer { Drop drops[]; };
 uniform mat4  projection;
 uniform mat4  view;
 uniform vec3  uWindDrift;
-uniform float uFallSpeed;
 uniform float uDropSize;
 
 out float vAlpha;
