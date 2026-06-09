@@ -37,16 +37,20 @@ uniform float uSunGlitter;
 uniform float uExposure;
 uniform float uMidWaveDetail;
 
+// Well-known constants (exact digits preserved from the original literals).
+const float TWO_PI = 6.2831853;
+const float PI     = 3.14159265;
+
 // ---- procedural mid-frequency normal detail ----
 vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
     float warp = 0.45 * sin(dot(worldXZ, vec2(-0.21, 0.98)) * 0.42 + time * 0.55)
                + 0.25 * sin(dot(worldXZ, vec2( 0.73, 0.31)) * 0.31 - time * 0.38);
 
     vec2 slope = vec2(0.0);
-    slope += normalize(vec2( 0.86,  0.50)) * cos(dot(worldXZ, normalize(vec2( 0.86,  0.50))) * (6.2831853 / 10.5) + warp           + time * 1.05) * 0.052;
-    slope += normalize(vec2(-0.48,  0.88)) * cos(dot(worldXZ, normalize(vec2(-0.48,  0.88))) * (6.2831853 /  6.3) - warp * 0.6     + time * 1.45) * 0.038;
-    slope += normalize(vec2( 0.18, -0.98)) * cos(dot(worldXZ, normalize(vec2( 0.18, -0.98))) * (6.2831853 /  3.7) + warp * 0.35   + time * 2.05) * 0.022;
-    slope += normalize(vec2(-0.96, -0.28)) * cos(dot(worldXZ, normalize(vec2(-0.96, -0.28))) * (6.2831853 / 18.0)                  - time * 0.72) * 0.030;
+    slope += normalize(vec2( 0.86,  0.50)) * cos(dot(worldXZ, normalize(vec2( 0.86,  0.50))) * (TWO_PI / 10.5) + warp           + time * 1.05) * 0.052;
+    slope += normalize(vec2(-0.48,  0.88)) * cos(dot(worldXZ, normalize(vec2(-0.48,  0.88))) * (TWO_PI /  6.3) - warp * 0.6     + time * 1.45) * 0.038;
+    slope += normalize(vec2( 0.18, -0.98)) * cos(dot(worldXZ, normalize(vec2( 0.18, -0.98))) * (TWO_PI /  3.7) + warp * 0.35   + time * 2.05) * 0.022;
+    slope += normalize(vec2(-0.96, -0.28)) * cos(dot(worldXZ, normalize(vec2(-0.96, -0.28))) * (TWO_PI / 18.0)                  - time * 0.72) * 0.030;
 
     return normalize(baseNormal + vec3(-slope.x, 0.0, -slope.y) * uMidWaveDetail);
 }
@@ -67,8 +71,9 @@ void main() {
         finalNormal = applyMediumWaveDetail(finalNormal, FragPos.xz);
 
         // ---- disturbance normal (C-key interactive waves) ----
-        const float kTexel     = 1.0 / 256.0;
-        const float kTexelWorld = oceanSize / 256.0; // metres per disturbance texel
+        const float kDisturbResolution = 256.0; // must match GPUDisturbance(256u, ...) in main.cpp
+        const float kTexel      = 1.0 / kDisturbResolution;
+        const float kTexelWorld = oceanSize / kDisturbResolution; // metres per disturbance texel
         float dR = texture(disturbanceMap, DisturbUV + vec2(kTexel, 0.0)).r;
         float dL = texture(disturbanceMap, DisturbUV - vec2(kTexel, 0.0)).r;
         float dU = texture(disturbanceMap, DisturbUV + vec2(0.0, kTexel)).r;
@@ -130,7 +135,7 @@ void main() {
                 float r = kBurst + reach + float(k) * kGap;
                 if (dist > r + kRingWidth || dist < r - kRingWidth) continue;
 
-                float wave = sin((dist - r) * (3.14159265 / kRingWidth));
+                float wave = sin((dist - r) * (PI / kRingWidth));
                 finalNormal.x += dir.x * wave * kAmp[k] * uRingStrength * fade;
                 finalNormal.z += dir.y * wave * kAmp[k] * uRingStrength * fade;
             }

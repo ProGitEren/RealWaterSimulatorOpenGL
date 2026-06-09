@@ -24,13 +24,14 @@ void main() {
     if (splashT <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAlpha = 0.0; return; }
 
     // Parabolic rise+fall over a short life (splashT counts down from kSplashLife).
-    const float kSplashLife = 0.45;
+    const float kSplashLife    = 0.45; // MUST match rain_update.comp
+    const float kWaterSurfaceY = 0.5;  // water plane Y (must match rain_update.comp + the FFT base)
     float age  = kSplashLife - splashT;                 // 0..kSplashLife
     float t    = clamp(age / kSplashLife, 0.0, 1.0);
     float h    = (1.0 - (2.0 * t - 1.0) * (2.0 * t - 1.0)) // parabola peaks mid-life
                * (1.5 + seed * 2.0) * uSplashHeight;
 
-    vec3 base = vec3(d.vel.y, 0.5, d.vel.z);   // impact XZ (stored at hit time)
+    vec3 base = vec3(d.vel.y, kWaterSurfaceY, d.vel.z);   // impact XZ (stored at hit time)
     vec3 p    = tip ? base + vec3(0.0, h, 0.0) : base;
     vAlpha    = tip ? (1.0 - t) : 0.0;       // bright tip fading, transparent base
 

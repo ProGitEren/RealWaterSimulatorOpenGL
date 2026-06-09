@@ -19,6 +19,8 @@ uniform float uSpawnRadius;  // 100 m
 uniform uint  uCount;        // active drop count (= spawnRate-scaled)
 uniform float uTime;
 
+const float TWO_PI = 6.2831853; // matches the 2*pi used CPU-side in GPURain
+
 // cheap hash -> [0,1)
 float hash(uint n) {
     n = (n << 13u) ^ n;
@@ -27,7 +29,7 @@ float hash(uint n) {
 }
 
 void respawn(inout Drop d, uint id) {
-    float a = hash(id * 7u  + uint(uTime * 31.0)) * 6.2831853;
+    float a = hash(id * 7u  + uint(uTime * 31.0)) * TWO_PI;
     float r = sqrt(hash(id * 13u + uint(uTime * 17.0))) * uSpawnRadius;
     d.pos.x = uCamPos.x + cos(a) * r;
     d.pos.z = uCamPos.z + sin(a) * r;
@@ -55,17 +57,18 @@ void main() {
 
     // Hit the water -> kick a splash at the impact, then recycle to the top.
     // Drifted out of the disc -> just recycle (no splash).
-    const float kSplashLife = 0.45;
+    const float kWaterSurfaceY = 0.5;  // water plane Y (must match rain_splash.vert + the FFT base)
+    const float kSplashLife    = 0.45; // splash duration (s); MUST match rain_splash.vert
     float dx = d.pos.x - uCamPos.x, dz = d.pos.z - uCamPos.z;
     bool outside = (dx*dx + dz*dz) > uSpawnRadius * uSpawnRadius * 1.2;
-    if (d.pos.y <= 0.5 && !outside) {
+    if (d.pos.y <= kWaterSurfaceY && !outside) {
         // Remember WHERE it hit (splash plays here even after the drop respawns).
         float ix = d.pos.x, iz = d.pos.z;
         respawn(d, id);
         d.vel.x = kSplashLife;
         d.vel.y = ix;
         d.vel.z = iz;
-    } else if (d.pos.y <= 0.5 || outside) {
+    } else if (d.pos.y <= kWaterSurfaceY || outside) {
         respawn(d, id);
     }
 

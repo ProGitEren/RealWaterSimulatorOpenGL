@@ -10,6 +10,8 @@ namespace {
     constexpr float kRippleTarget = 480.0f;   // ~ SSBO budget (512) in the water shader
     constexpr float kRippleRadius = 80.0f;    // rings spawn within this of the camera
     constexpr float kSpawnRadius  = 100.0f;
+    constexpr float kTwoPi        = 6.2831853f;       // 2*pi (matches the rain shaders)
+    constexpr float kMaxRippleBurstPerFrame = 20.0f;  // cap rings spawned in one frame
     float frand01() { return float(rand()) / float(RAND_MAX); }
 }
 
@@ -64,11 +66,11 @@ void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
     // Independent of drop count: a steady ~480/lifetime rings around the camera so
     // the surface always shows rain rings without overflowing the 512-entry SSBO.
     const float rippleRate = kRippleTarget / std::max(rippleLifetime, 0.25f);
-    m_rippleBudget = std::min(m_rippleBudget + rippleRate * dt, 20.0f);
+    m_rippleBudget = std::min(m_rippleBudget + rippleRate * dt, kMaxRippleBurstPerFrame);
     if (spawnRate > 0) {
         while (m_rippleBudget >= 1.0f) {
             m_rippleBudget -= 1.0f;
-            float a = frand01() * 6.2831853f;
+            float a = frand01() * kTwoPi;
             float r = std::sqrt(frand01()) * kRippleRadius;
             glm::vec3 ring(camPos.x + std::cos(a) * r, camPos.z + std::sin(a) * r, 0.0f);
             if (m_ripples.size() >= kMaxStoredRipples) m_ripples.pop_front();

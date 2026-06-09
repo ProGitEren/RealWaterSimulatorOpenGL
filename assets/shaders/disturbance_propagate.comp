@@ -26,6 +26,7 @@ void main() {
                + imageLoad(currImg, D).r + imageLoad(currImg, U).r
                - 4.0 * cur;
 
-    float next = clamp((2.0 * cur - prev + waveC * lapl) * damping, -25.0, 25.0);
+    const float HEIGHT_CLAMP = 25.0; // stability bound on the integrated wave height
+    float next = clamp((2.0 * cur - prev + waveC * lapl) * damping, -HEIGHT_CLAMP, HEIGHT_CLAMP);
     imageStore(nextImg, coord, vec4(next, 0.0, 0.0, 1.0));
 }
