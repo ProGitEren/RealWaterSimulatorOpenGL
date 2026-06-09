@@ -6,7 +6,7 @@
 namespace {
     constexpr float kWaveSpeed   = 12.0f;  // m/s — governs how fast disturbance rings spread
     constexpr float kDamping     = 0.998f; // energy retention per tick
-    constexpr float kSigmaTexels = 5.0f;   // Gaussian radius of injected pulse (texels)
+    constexpr float kSigmaTexels = 5.0f;   // default Gaussian radius of injected pulse (texels)
     constexpr float kFixedDt     = 1.0f / 60.0f;
 }
 
@@ -63,7 +63,7 @@ void GPUDisturbance::update(float /*dt*/) {
     m_next = tmp;
 }
 
-void GPUDisturbance::disturb(glm::vec2 worldPos, float amplitude) {
+void GPUDisturbance::disturb(glm::vec2 worldPos, float amplitude, float sigmaTexels) {
     const glm::vec2 uv = worldPos / m_worldSize + glm::vec2(0.5f);
     if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f) return;
 
@@ -72,7 +72,7 @@ void GPUDisturbance::disturb(glm::vec2 worldPos, float amplitude) {
     m_injectShader.use();
     m_injectShader.setVec2("centerUV",    uv);
     m_injectShader.setFloat("amplitude",  amplitude);
-    m_injectShader.setFloat("sigmaTexels", kSigmaTexels);
+    m_injectShader.setFloat("sigmaTexels", sigmaTexels > 0.0f ? sigmaTexels : kSigmaTexels);
 
     // Read-write on current buffer so the pulse is visible immediately this frame
     glBindImageTexture(0, m_tex[m_curr], 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);

@@ -238,6 +238,9 @@ int main() {
         float modelYaw;   // extra yaw so the model's forward axis aligns to heading
         float wakeWidth;  // hull half-width (m) -> physics beam (= 2*wakeWidth)
         float hullLength; // bow-to-stern length (m)
+        float wakeScale;  // per-boat wake amplitude multiplier (ship=1.0 reference)
+                          // -> one UI slider, but a jet-ski drops a small ripple
+                          //    while the big ship throws a broad swell
         float turnVel   = 0.0f; // current yaw rate (rad/s) — drives banking
         float bankAngle = 0.0f; // smoothed lean into turns (rad)
         BoatPhysics phys; // force-based 6-DOF heave/pitch/roll state
@@ -254,10 +257,10 @@ int main() {
     const float kHalfPi = 1.5707963f;
     const float kPiF    = 3.1415927f;
     std::vector<Vehicle> vehicles = {
-        //         model     position                                              heading        spd  scale   yOff  modelYaw  wakeW  hullLen
-        { &jetski,  glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f), 16.0f, 120.0f, 1.5f, -kHalfPi,  4.0f,   5.0f },
-        { &yacht,   glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  8.0f, 0.03f,  0.0f,  kPiF,    14.0f,  90.0f },
-        { &bigShip, glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  5.0f, 0.02f,  0.0f,  0.0f,    20.0f, 110.0f },
+        //         model     position                                              heading        spd  scale   yOff  modelYaw  wakeW  hullLen  wakeScale
+        { &jetski,  glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f), 16.0f, 120.0f, 1.5f, -kHalfPi,  4.0f,   5.0f,  0.22f },
+        { &yacht,   glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  8.0f, 0.03f,  0.0f,  kPiF,    14.0f,  90.0f,  0.70f },
+        { &bigShip, glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  5.0f, 0.02f,  0.0f,  0.0f,    20.0f, 110.0f,  1.00f },
     };
     // Configure each vehicle's buoyancy hull dimensions from its length/beam.
     for (Vehicle& v : vehicles) {
@@ -616,9 +619,24 @@ int main() {
                     float vyaw = v.heading + v.modelYaw;
                     glm::vec2 hullCtr = p + glm::vec2(lc.x * std::cos(vyaw) + lc.z * std::sin(vyaw),
                                                      -lc.x * std::sin(vyaw) + lc.z * std::cos(vyaw));
-                    glm::vec2 sternXZ = hullCtr - glm::vec2(dir.x, dir.z) * (v.hullLength * 0.5f);
+
+                    // Size the wake to the boat. The disturbance map is 256 texels
+                    // over the ocean, so one texel ~= oceanSize/256 metres. Footprint
+                    // tracks the hull's beam: a tight ripple for the jet-ski, a broad
+                    // swell for the ship — instead of one 20 m bump that engulfs the
+                    // little boats.
+                    const float kTexelM   = (kOceanMeshRes * kOceanMeshTile) / 256.0f; // ~4 m
+                    float sigmaTexels = glm::clamp(v.wakeWidth / kTexelM, 1.5f, 5.0f);
+                    float sigmaM      = sigmaTexels * kTexelM;
+
+                    // Inject just BEHIND the transom (by most of the footprint radius)
+                    // so the swell trails the boat as a separation wake rather than
+                    // rising up underneath and "submerging" it.
+                    glm::vec2 sternXZ = hullCtr - glm::vec2(dir.x, dir.z)
+                                        * (v.hullLength * 0.5f + sigmaM * 0.6f);
                     disturbance.disturb(sternXZ,
-                                        wakeStrength * glm::min(1.0f, v.speed / 12.0f));
+                                        wakeStrength * v.wakeScale * glm::min(1.0f, v.speed / 12.0f),
+                                        sigmaTexels);
                 }
 
                 // HARD safety net — guarantees no boat-boat overlap and no phasing

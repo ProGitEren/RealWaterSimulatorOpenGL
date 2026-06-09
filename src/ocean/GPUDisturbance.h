@@ -13,7 +13,10 @@ public:
     void update(float dt);
 
     // worldPos: XZ world-space impact point. amplitude: crest height in metres.
-    void disturb(glm::vec2 worldPos, float amplitude = 3.0f);
+    // sigmaTexels: Gaussian footprint radius of the injected pulse, in texels —
+    // lets a small boat drop a tight ripple and a large ship a broad swell from
+    // the same call site (texel = worldSize/resolution metres).
+    void disturb(glm::vec2 worldPos, float amplitude = 3.0f, float sigmaTexels = 5.0f);
 
     unsigned int getHeightTexture() const { return m_tex[m_curr]; }
 
