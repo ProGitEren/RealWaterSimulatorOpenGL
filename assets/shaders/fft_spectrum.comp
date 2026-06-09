@@ -12,7 +12,7 @@ uniform float choppiness;
 const float PI = 3.14159265359;
 
 vec2 complexMul(vec2 a, vec2 b) {
-    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+    return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
 }
 
 vec2 complexConjugate(vec2 value) {
@@ -36,7 +36,7 @@ void main() {
     vec2 h0Mirror = complexConjugate(texelFetch(initialSpectrumTexture, mirrored, 0).xy);
     float phase = texelFetch(phaseTexture, coord, 0).r;
     vec2 phasePositive = vec2(cos(phase), sin(phase));
-    vec2 phaseNegative = vec2(phasePositive.x, -phasePositive.y);
+    vec2 phaseNegative = complexConjugate(phasePositive);
     vec2 h = complexMul(h0, phasePositive) + complexMul(h0Mirror, phaseNegative);
 
     vec2 k = waveVector(coord);

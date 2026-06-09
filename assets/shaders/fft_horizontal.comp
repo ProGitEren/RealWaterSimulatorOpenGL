@@ -24,7 +24,7 @@ layout(binding = 3, rg32f)   uniform writeonly image2D outputB;
 uniform int resolution;
 uniform int subseqCount;   // 1, 2, 4, ... N/2 across the passes
 
-const float PI = 3.14159265358979323846;
+const float PI = 3.14159265359;
 
 vec2 complexMul(vec2 a, vec2 b) {
     return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);

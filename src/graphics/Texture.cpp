@@ -12,10 +12,11 @@ unsigned int loadTexture2D(const std::string& path, bool srgb) {
         return 0;
     }
 
+    // Defaults already cover 3-channel RGB (and any other count); only 1- and
+    // 4-channel need to override them.
     GLenum srcFormat = GL_RGB;
     GLenum intFormat = srgb ? GL_SRGB8 : GL_RGB8;
     if (channels == 1)      { srcFormat = GL_RED;  intFormat = GL_R8; }
-    else if (channels == 3) { srcFormat = GL_RGB;  intFormat = srgb ? GL_SRGB8        : GL_RGB8; }
     else if (channels == 4) { srcFormat = GL_RGBA; intFormat = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8; }
 
     unsigned int id;

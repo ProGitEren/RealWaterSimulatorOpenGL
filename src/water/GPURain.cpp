@@ -18,9 +18,8 @@ GPURain::GPURain(unsigned int maxDrops)
       m_updateShader("../assets/shaders/rain_update.comp") {
 
     // Drop SSBO, zero-initialised (pos.w == 0 -> the compute shader respawns it).
+    // vector<Drop>(n) value-initialises each POD Drop to all-zero bytes already.
     std::vector<Drop> init(m_maxDrops);
-    std::fill(reinterpret_cast<char*>(init.data()),
-              reinterpret_cast<char*>(init.data()) + init.size() * sizeof(Drop), 0);
     glGenBuffers(1, &m_ssbo);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, init.size() * sizeof(Drop), init.data(), GL_DYNAMIC_DRAW);
