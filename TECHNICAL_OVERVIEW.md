@@ -280,20 +280,27 @@ Navigation is **kinematic steering** (not a car/engine sim). Each frame, per boa
 ### B) Water interaction — what principle
 Two directions of interaction:
 - **Water → boat (buoyancy):** see §5 below — the boat heaves/pitches/rolls on the waves.
-- **Boat → water (wake):** each frame a moving boat calls `disturbance.disturb(sternXZ, amplitude)`
-  at its **stern**, injecting a ripple into the GPU disturbance field (§8). Repeated along the path,
-  this lays down a trailing **wake**; the amplitude scales with speed.
+- **Boat → water (wake):** each frame a moving boat calls `disturbance.disturb(sternXZ, amplitude,
+  sigmaTexels)`, injecting a ripple into the GPU disturbance field (§8). The wake is **scaled per
+  boat from one `wakeStrength` slider**: the injection point is the visible hull centre
+  (`Model::localCenter()`) pushed **behind the transom** by ~0.6× the footprint so it trails as a
+  separation wake (not welling up under the hull); the **footprint** tracks the beam
+  (`sigmaTexels = clamp(wakeWidth/texelM, 1.5, 5.0)` → tight ripple for the jet-ski, broad swell
+  for the ship); and the **amplitude** is `wakeStrength × wakeScale × min(1, speed/12)`
+  (`wakeScale`: jet-ski 0.22, yacht 0.70, ship 1.0).
 - **Foam:** the white churn around boats is the water shader's **whitecap foam** (FFT Jacobian)
   plus the disturbance ripples — there is **no separate foam particle system** in the current build.
 
 ### Per-vehicle numbers (`main.cpp` vehicles table)
-| Vehicle | speed | scale | hull length | beam (2×wakeWidth) | notes |
-|---|---|---|---|---|---|
-| jet-ski | 16 m/s | 120 | 5 m | 8 m | tiny model (glTF bakes 0.01 scale) → big multiplier; snappy buoyancy |
-| yacht | 8 m/s | 0.03 | 90 m | 28 m | model faces backward → `modelYaw = +π` |
-| big-ship | 5 m/s | 0.02 | 110 m | 40 m | heaviest → slowest buoyancy response |
+| Vehicle | speed | scale | hull length | beam (2×wakeWidth) | wakeScale | notes |
+|---|---|---|---|---|---|---|
+| jet-ski | 16 m/s | 120 | 5 m | 8 m | 0.22 | tiny model (glTF bakes 0.01 scale) → big multiplier; snappy buoyancy |
+| yacht | 8 m/s | 0.03 | 90 m | 28 m | 0.70 | model faces backward → `modelYaw = +π` |
+| big-ship | 5 m/s | 0.02 | 110 m | 40 m | 1.00 | heaviest → slowest buoyancy response; wake reference |
 
 Controls: **P** = pause/resume all vehicles. Per-boat speed sliders in the ImGui "Vehicles" panel.
+The lone central rock can be toggled on/off in the ImGui **"Scene"** section (hiding it also frees
+its collision space so boats pass through).
 
 ---
 
@@ -419,10 +426,12 @@ everything looks dark/muddy. Non-uniform scale uses an **inverse-transpose norma
   textures), scaled 4×, placed at (60, −3, 30). A **procedural fallback** exists
   (`RockGenerator` — a noise-displaced icosphere) if the file is missing.
 - **Mountains = coastal cliffs:** `coastal_cliff_04` (a real ~87 m Poly Haven cliff scan) placed as
-  a **ring of 8 instances** around the bay edge (`main.cpp` `mountains[]`), each scaled ~9× and
-  **rotated to face inward** (`faceIn = atan2(-px,-pz)`), stretched taller in Y. They sit at ±470 m
-  to **hide the square water patch's edge** behind land. (A procedural noise-terrain system existed
-  earlier but was removed — the real cliff scans look far better.)
+  a **uniform ring of 8 instances** around the bay edge (`main.cpp` `mountains[]`), each scaled ~9×
+  and **rotated to face inward** (`faceIn = atan2(-px,-pz)`), stretched taller in Y. All 8 sit at
+  the **same radius 470 m** — the 4 edge pieces on the axes (`kEdge = 470`) and the 4 corners at
+  `kCorner = kEdge × 0.7071 ≈ 332` axial — so the heavily-overlapping ring forms a continuous
+  coastline that **hides the square water patch's edge** with no diagonal void. (A procedural
+  noise-terrain system existed earlier but was removed — the real cliff scans look far better.)
 
 ### Key model numbers
 | Model | meshes | textures | raw size → world | notes |
@@ -454,9 +463,11 @@ next = (2·current − previous + waveC · laplacian) · damping
 - `laplacian` = the 4-neighbour stencil (how curved the surface is at each texel).
 - `waveC = (speed² · dt²)/dx²` controls propagation speed; `damping ≈ 0.997–0.999` makes ripples
   fade. Three textures rotate as **current / previous / next** each frame (ping-pong).
-- **`disturb(worldPos, amplitude)`** injects a Gaussian bump at an XZ point → it then **spreads
-  outward and fades** like a real ripple. The **C-key** fires one 40 m ahead of the camera; **moving
-  boats** inject a small one at their stern every frame (amplitude ∝ speed) → a trailing wake.
+- **`disturb(worldPos, amplitude, sigmaTexels)`** injects a Gaussian bump (whose footprint radius
+  is `sigmaTexels`) at an XZ point → it then **spreads outward and fades** like a real ripple. The
+  **C-key** fires one 40 m ahead of the camera (default sigma); **moving boats** inject one just
+  behind their stern every frame, with footprint and amplitude **scaled per boat** (see §4 B) so a
+  jet-ski leaves a tight ripple and the ship a broad swell, both trailing as a separation wake.
 - The result feeds the water: the **vertex shader** raises the surface by the disturbance height,
   and the **fragment shader** bends the normal by its slope (so wakes catch the light).
 
@@ -467,7 +478,8 @@ next = (2·current − previous + waveC · laplacian) · damping
 | integration | Verlet, 3-texture ping-pong |
 | damping | ~0.997–0.999 |
 | C-key amplitude | `cKeySplash` (default 3, 0–10) |
-| boat wake amplitude | `wakeStrength × min(1, speed/12)` (default 0.02) |
+| boat wake amplitude | `wakeStrength × wakeScale × min(1, speed/12)` (slider default 0.01) |
+| boat wake footprint | `clamp(wakeWidth / texelM, 1.5, 5.0)` texels (texel ≈ 4 m) |
 
 ---
 

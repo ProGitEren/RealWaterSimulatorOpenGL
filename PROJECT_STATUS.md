@@ -5,8 +5,8 @@
 > patches without re-discovering how things work. It documents the architecture, the
 > exact current state, every subsystem, the known issues, and the conventions to follow.
 >
-> **Last updated:** reflects the working tree on branch `eren-dev-stockham-fft-pbr`
-> with a large body of **uncommitted** work (see [§2 Git State](#2-git-state)).
+> **Last updated:** reflects branch `clean-deploy-v1` — the current deployment
+> branch. The tree is **clean / fully committed** (see [§2 Git State](#2-git-state)).
 
 ---
 
@@ -14,9 +14,9 @@
 
 A real-time, GPU-accelerated **ocean / water simulator** in **C++17 + OpenGL 4.6**, built
 on GLFW + GLAD + GLM + STB + cgltf + Dear ImGui (all vendored). It started as an FFT ocean and has grown into
-a small scene: a crisp FFT sea inside a ring of photoreal coastal cliffs, with rain,
-interactive ripples, loadable glTF models, procedural terrain, and moving vehicles
-(jet-ski / yacht / big-ship).
+a small scene: a crisp FFT sea inside a ring of photoreal coastal cliffs, with GPU rain,
+interactive ripples, loadable glTF models, and moving vehicles (jet-ski / yacht / big-ship)
+that float, steer, and leave wakes.
 
 **Runs on Linux and Windows.** Same OpenGL 4.6 + C++17 code; CMake handles both. Developed
 and tested on Linux (NVIDIA RTX 3090, driver 535, OpenGL 4.6). See `LINUX_BUILD.md` for
@@ -25,48 +25,34 @@ the Linux dependency/build guide.
 ### Current scene (what you see when you run it)
 - A bounded **512-resolution FFT ocean** (1024 m patch) fixed in world space.
 - A **ring of 8 coastal-cliff instances** (real Poly Haven scan) enclosing the water like a lagoon.
-- A **foreground rock** (Poly Haven marble cliff) floating in the bay.
-- **Three vehicles** (jet-ski, yacht, big-ship) at random positions, cruising and turning at the bay edge.
-- **Rain** with splashes and expanding ripple rings on the water.
+- A **foreground rock** (Poly Haven marble cliff) floating in the bay (toggleable in the UI).
+- **Three vehicles** (jet-ski, yacht, big-ship) at random positions, cruising and turning at the
+  bay edge with boids-style steering, collision avoidance, buoyancy bob, and per-boat wakes.
+- **Rain** (fully GPU) with splashes and expanding ripple rings on the water.
 - Full **PBR-ish water shading** (reflection + refraction + subsurface scatter + sun glitter + foam).
 
 ---
 
 ## 2. Git State
 
-- **Current branch:** `eren-dev-stockham-fft-pbr`
-- **Remote:** `origin` → `https://github.com/ProGitEren/RealWaterSimulatorOpenGL.git`
-- **Last commit:** `815af16 Rewrite ocean FFT to Stockham (true 512) + PBR water shading`
-- **Main branch:** `main`
+- **Current branch:** `clean-deploy-v1` (the deployment branch this doc tracks)
+- **Remote:** `origin` → `git@github.com:ProGitEren/RealWaterSimulatorOpenGL.git`
+- **Tree status:** **clean** — all feature work is committed and pushed.
+- **Other branches:** `main`; `deploy-rt` (adds analytic ray-traced reflections, see below);
+  `eren-dev-stockham-fft-pbr` (older FFT/PBR line of work).
 
-### ⚠️ There is a LOT of uncommitted work in the tree
-Everything below the FFT/PBR commit (the entire model-loading system, terrain, cliffs,
-vehicles, gamma fixes, fixed water, faster camera) is **uncommitted**. Before continuing,
-**commit it** so it is not at risk. Suggested: stage source/shaders/models, **not** build
-artifacts.
+The entire scene — GPU FFT ocean, GPU rain, glTF model loader, coastal-cliff ring, the three
+vehicles with buoyancy + per-boat wakes, the full ImGui control panel — is **committed**. There
+is no at-risk uncommitted work; just build (§3) and run.
 
-**Modified (tracked):** `CMakeLists.txt`, `src/main.cpp`, `src/core/Camera.cpp`,
-`src/ocean/OceanMesh.cpp`, `build/output.mp4` (do not commit the mp4).
+### Ray tracing lives on a separate branch
+`clean-deploy-v1` deliberately has **no ray tracing**. Analytic ray-traced reflections (boats as
+OBBs + the rock as an ellipsoid, intersected in the water fragment shader) live only on the
+**`deploy-rt`** branch. Keep them there unless a future merge is explicitly requested.
 
-**Untracked (new — all should be committed except build dirs):**
-- `src/graphics/Mesh.{h,cpp}`, `Model.{h,cpp}`, `Texture.{h,cpp}`, `Terrain.{h,cpp}`, `RockGenerator.{h,cpp}`
-- `assets/shaders/object.{vert,frag}`, `terrain.{vert,frag}`
-- `assets/models/` (the glTF assets), `assets/textures/terrain/`
-- `external/cgltf/` (vendored single-header glTF parser)
-- `build_linux/` ← **do NOT commit** (build output)
-
-### `.gitignore` — FIXED (was broken)
-The committed `.gitignore` previously had literal quotes around each entry (`"build/"` etc.),
-which git treated literally, so the rules did nothing — that's why `build/` (774 files) got
-tracked and `build_linux/` was not ignored. It has been **rewritten** with correct, unquoted
-patterns covering `build*/`, object/binary files, `frames/`, `*.mp4`, and IDE/OS cruft.
-
-> The already-tracked `build/` artifacts (774 files) are still in the index from before the
-> fix. To untrack them without deleting your local copy:
-> ```bash
-> git rm -r --cached build/ && git commit -m "Untrack stale build/ artifacts"
-> ```
-> The single-line push command in this repo's handoff explicitly excludes them regardless.
+### `.gitignore`
+Correct and in effect — `build*/`, object/binary files, `frames/`, `*.mp4`, and IDE/OS cruft are
+ignored. Build into `build_linux/` (Linux) or `build_win/` (Windows); neither is tracked.
 
 ---
 
@@ -78,7 +64,7 @@ patterns covering `build*/`, object/binary files, `frames/`, `*.mp4`, and IDE/OS
 sudo apt-get install -y build-essential cmake libgl1-mesa-dev libglu1-mesa-dev \
     libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxxf86vm-dev xorg-dev
 
-# build (use a separate dir so it doesn't collide with the tracked Windows build/)
+# build into build_linux/ (git-ignored; keep Linux/Windows build dirs separate)
 mkdir -p build_linux && cd build_linux
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
@@ -106,9 +92,8 @@ RealWaterSimulator.exe
 Or open the folder in Visual Studio 2019/2022 (it has native CMake support) and build the
 `RealWaterSimulator` target. Requires an OpenGL 4.6 GPU + up-to-date GPU driver.
 
-> **Do not reuse the tracked `build/` directory** — it holds stale artifacts from a previous
-> machine's configure (different absolute paths, different CMake/compiler version). Always
-> configure fresh into `build_win/`.
+> Configure fresh into `build_win/` (git-ignored). Don't share a build directory between
+> machines — a configure bakes in absolute paths and a specific CMake/compiler version.
 
 See [§3a Windows 11 Portability Assessment](#3a-windows-11-portability-assessment) for a
 detailed, pinpointed review of Windows-specific risks.
@@ -193,26 +178,25 @@ RealWaterSimulatorOpenGL/
 ├── PROJECT_STATUS.md           <-- this file
 ├── assets/
 │   ├── shaders/                GLSL (loaded at runtime via ../assets/shaders/...)
-│   ├── textures/skybox/        Cubemap faces (+ sky_1/2/3, environment_1 variants)
-│   ├── textures/terrain/       Tiling terrain textures (rock_diff.jpg, rock_nor.jpg)
+│   ├── textures/skybox/        Cubemap faces (sky_1/2/3, environment_1 variants)
 │   └── models/                 glTF models (rocks, cliff, jet-ski, yacht, big-ship)
 ├── external/                   Vendored: glad, glfw, glm, stb, cgltf, imgui (Dear ImGui)
 └── src/
-    ├── main.cpp                Entry point: scene setup, render loop, input, vehicles
+    ├── main.cpp                Entry point: scene setup, render loop, input, UI, vehicles
     ├── core/                   Window (GLFW), Camera (fly cam)
-    ├── graphics/               Shader, Mesh, Model (glTF), Texture, Terrain, RockGenerator
+    ├── graphics/               Shader, Mesh, Model (glTF), Texture, RockGenerator
     ├── ocean/                  GPUFFTOcean (FFT + CPU height readback), OceanMesh, GPUDisturbance
-    └── water/                  WaterSimulation, RainSystem, BoatPhysics (6-DOF buoyancy),
-                                FoamMap (surface wake foam), WakeFoam (old sprite foam, unused)
+    └── water/                  GPURain (fully GPU rain), BoatPhysics (6-DOF buoyancy)
 ```
-Shaders: `object.{vert,frag}` (models), `terrain.{vert,frag}`, `wakefoam.{vert,frag}` (old
-sprite foam, unused). Wake foam now lives in `standard.frag` via the `wakeFoamMap` sampler.
+These are exactly the `.cpp` files in `CMakeLists.txt`'s `SOURCES` list. Object/cliff/vehicle
+shading uses `object.{vert,frag}`; rain uses `rain_update.comp` + `rain_gpu.*` + `rain_splash.*`;
+the water surface is `standard.{vert,frag}`.
 
-### Backup / dead files (ignore unless archaeology needed)
-`src/main_v1.cpp … main_v8.cpp`, `src/main_gerstner_backup.cpp`, `main_pre_gpu_fft_backup.cpp`,
-and `assets/shaders/standard_gerstner_backup.*`, `standard_pre_gpu_fft.*` are **old versions**,
-not built. The active `Terrain` system is also currently **unused** in `main.cpp` (the
-cliffs replaced it) but kept for reference.
+> **No foam particle system in this build.** The white churn around boats comes from the water
+> shader's FFT-Jacobian whitecaps plus the disturbance ripples — the old `FoamMap` / `WakeFoam`
+> sprite systems and the procedural `Terrain` system have been **removed** (the real cliff scans
+> replaced terrain; the shader foam replaced the sprites). `RockGenerator` remains only as a
+> procedural fallback if the rock glTF fails to load.
 
 ---
 
@@ -221,16 +205,19 @@ cliffs replaced it) but kept for reference.
 ### Render loop (in `main.cpp::main()`), per frame:
 1. **Input** — keyboard/mouse; toggles (wireframe, vehicle pause), live ocean tuning.
 2. **Fixed-timestep physics** (`kFixedDt = 1/60`, accumulator pattern):
-   - `water.update()` — CPU ripple grid
-   - `rainSystem.update()` — spawn/age raindrops, splashes, ripples
    - `ocean.update()` — runs the entire GPU FFT pipeline (see §6)
-   - `disturbance.update()` — propagate interactive (C-key) waves
-   - **vehicle movement** — advance each vehicle along its heading; steer back at bay bound
-3. **Render**:
+   - `disturbance.update()` — propagate interactive (C-key) + boat-wake waves
+   - **vehicle navigation** — advance each vehicle along its heading; boids-style steering
+     (boundary + separation + rock avoidance) + hard collision clamps; inject the stern wake
+3. **`rainSystem.update()`** once per frame (outside the substep loop) — one GPU compute dispatch
+   advances every drop + spawns throttled ripple rings (see §10).
+4. **`ocean.readbackDisplacement()`** — async PBO copy of GPU wave heights to the CPU.
+5. **`BoatPhysics::step()`** per vehicle — solve heave/pitch/roll from the sampled heights.
+6. **Render**:
    - Bind ocean textures to units 1/2/3, skybox cubemap to unit 0.
    - Draw **ocean** (`standard.vert/frag`) — displaced FFT grid, full water shading.
-   - Draw **solid objects** (`object.vert/frag`): rock, cliff ring, vehicles.
-   - Draw **skybox** (depth-trick), then **rain** (transparent, after skybox).
+   - Draw **solid objects** (`object.vert/frag`): rock (toggleable), cliff ring, vehicles.
+   - Draw **skybox** (depth-trick), then **rain** (streaks + splashes), then the **ImGui** panel.
    - Optional frame recording to `frames/*.png` (R key).
 
 ### Texture unit allocation (important — avoid clashes when adding features)
@@ -242,7 +229,6 @@ cliffs replaced it) but kept for reference.
 | 3 | disturbance height map |
 | 4 | SSBO binding point for rain ripples (`std430 binding = 4`) — note: this is an SSBO *binding*, separate from texture units |
 | 4–7 | object material maps (albedo/normal/roughness/AO) in `Model::draw` |
-| 4–9 | terrain triplanar maps in the (currently unused) terrain path |
 
 > When adding objects, follow `Model::draw`'s convention (material maps on units 4–7).
 
@@ -333,7 +319,7 @@ vec2 uv}`. Holds a `Material` (texture ids + `baseColor`).
 ### `Texture.{h,cpp}`
 `loadTexture2D(path, srgb)` via stb. **sRGB matters:** colour/albedo maps load with
 `srgb=true` (GPU returns linear); data maps (normal/roughness/AO) with `srgb=false`.
-**Object/terrain shaders must gamma-encode (`pow(c, 1/2.2)`) at the end** or everything
+**Object shaders must gamma-encode (`pow(c, 1/2.2)`) at the end** or everything
 renders dark/muddy — this was a real bug that was fixed.
 
 ### `object.vert/frag`
@@ -359,25 +345,32 @@ Uses inverse-transpose normal matrix (supports non-uniform scale). **Gamma-encod
 
 ## 8. Vehicles (jet-ski / yacht / big-ship)
 
-Defined in `main.cpp`. A `Vehicle` struct:
+Defined in `main.cpp`. A `Vehicle` struct (key fields):
 ```cpp
 struct Vehicle { Model* model; glm::vec3 pos; float heading; float speed;
-                 float scale; float yOffset; float modelYaw; float wakeWidth; };
+                 float scale; float yOffset; float modelYaw; float wakeWidth;
+                 float hullLength; float wakeScale; /* + turnVel, bankAngle, BoatPhysics phys */ };
 ```
 - Placed at **random positions** in the bay, random heading. Each has its own speed/scale.
-- **Movement** (in the fixed-timestep loop): advance along `heading`; if past
-  `kBayBound = 430`, steer heading toward origin to stay on the water.
+- **Navigation** (fixed-timestep loop): advance along `heading`, then steer with a simplified
+  **boids** model — boundary return (past `0.7 × kSoftRadius`, `kSoftRadius = 300`), separation
+  from the other boats, and **central-rock avoidance** — turned into a rate-limited heading change
+  (`boatTurnRate ≈ 0.45 rad/s`, sharper near the edge) plus a gentle sinusoidal wander.
+- **Hard collision net** (after steering): clamps guarantee **no boat-boat overlap** and **no
+  phasing** through the cliffs (`kHullLimit = 400`) or the rock (`kRockHard = 45`). The turn
+  radii/keep-distances are tuned so boats never get close enough to the cliffs to need it.
+- **Banking:** boats lean into turns (roll ∝ yaw-rate × speed), eased smoothly.
 - **`P` key toggles movement** on/off (`vehiclesMoving`, debounced). Prints state.
 - **`modelYaw`** corrects each model's authored-forward axis vs travel direction:
-  - jet-ski `-π/2` (it faced 90° right), yacht `+π` (reversed), big-ship `0` (correct).
-  - **If a vehicle still faces wrong after a model change, this is the field to adjust.**
-- **`wakeWidth`** = hull half-width (m); controls how wide the foam wake fans out.
+  jet-ski `-π/2`, yacht `+π`, big-ship `0`. **Adjust this if a swapped model faces wrong.**
+- **`wakeWidth`** = hull half-width (m) → drives the buoyancy beam AND the wake footprint (§ below).
+- **`wakeScale`** = per-boat wake amplitude multiplier (ship = 1.0 reference) — see Wakes below.
 
 Current config (the `vehicles` vector):
 ```
-jetski : speed 16, scale 120,  yOffset 1.5, modelYaw -π/2, wakeWidth 4
-yacht  : speed  8, scale 0.03, yOffset 0.0, modelYaw  +π,  wakeWidth 14
-bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0,  wakeWidth 20
+jetski : speed 16, scale 120,  yOffset 1.5, modelYaw -π/2, wakeWidth 4,  hullLen 5,   wakeScale 0.22
+yacht  : speed  8, scale 0.03, yOffset 0.0, modelYaw  +π,  wakeWidth 14, hullLen 90,  wakeScale 0.70
+bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0,  wakeWidth 20, hullLen 110, wakeScale 1.00
 ```
 
 ### Buoyancy (vehicles float, bob, and tilt) — DONE
@@ -399,54 +392,58 @@ bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0,  wakeWidth 20
 > History: this replaced an earlier kinematic snap-to-surface (single point → multi-point +
 > low-pass). The force model gives emergent heave/pitch/roll. Tunable per vehicle.
 
-### Wakes — DONE (three parts)
-1. **Water ripple wake:** each fixed step a moving vehicle calls `disturbance.disturb()` at
-   the hull (amplitude ∝ speed), laying a ripple trail into the `GPUDisturbance` height field.
-   Strength via the `wakeStrength` ImGui slider.
-2. **Foam wake (visual) — surface foam map:** `src/water/FoamMap.{h,cpp}` — a world-space
-   coverage texture over the ocean patch. Moving vehicles **paint** foam into it each frame
-   (bow cap + hull-side splats + stern churn); it `decay()`s over time and is `upload()`ed
-   once per frame. The water shader (`standard.frag`, `wakeFoamMap` on texture unit 10)
-   samples it by `worldXZ/oceanSize+0.5` and blends white foam into the surface. **This is the
-   current foam system** — it lives ON the water, so there's no overdraw on the hull. ImGui:
-   foam intensity, foam fade/sec.
-   > NOTE: `src/water/WakeFoam.{h,cpp}` + `wakefoam.{vert,frag}` are the **older particle**
-   > foam (camera-facing sprites). It washed white over the hull (overdraw bug) and was
-   > replaced by the foam map. Files remain in the tree but are **no longer used** by main.cpp.
+### Wakes — DONE (per-boat scaled ripple wake)
+Each fixed step a moving vehicle injects a ripple into the `GPUDisturbance` height field. Three
+things make the wake read correctly per boat from a **single** `wakeStrength` ImGui slider:
+1. **Injected behind the transom, at the visible hull centre.** The injection point is the boat's
+   AABB centre (`Model::localCenter()`, so meshes that sit off their glTF origin don't throw the
+   wake to one side) shifted back to the stern **plus** ~0.6× the footprint radius, so the swell
+   **trails** the boat as a separation wake instead of welling up underneath and "submerging" it.
+2. **Footprint scales with the hull's beam.** `GPUDisturbance::disturb()` takes a per-call
+   `sigmaTexels`; each boat's is `clamp(wakeWidth / texelM, 1.5, 5.0)` (texel ≈ 4 m) → a tight
+   ~6 m ripple for the jet-ski, a broad ~20 m swell for the ship.
+3. **Amplitude scales per boat.** `amplitude = wakeStrength × wakeScale × min(1, speed/12)`. The
+   ship (`wakeScale 1.0`) keeps the reference strength; the jet-ski (`0.22`) drops a small ripple
+   instead of being engulfed.
+
+> **No foam particle system.** The white churn is the water shader's FFT-Jacobian whitecaps +
+> the disturbance ripples (the old `FoamMap` / `WakeFoam` systems were removed).
 
 ---
 
-## 9. Coastal Cliff Ring & Terrain
+## 9. Coastal Cliff Ring
 
 ### Cliff ring (active — in `main.cpp`)
-8 instances of `coastal_cliff_04` arranged around the bay. Edge pieces at `kEdge = 470`,
-corners at `kCorner = 470` (just inside the ±512 water edge so land **covers the water tile
-edge** — hides the seam). Each rotated to face inward via `faceIn(px,pz) = atan2(-px,-pz) +
-kFaceOffset`. `kFaceOffset = 0` (flip to π if a future cliff model faces outward).
-Base scale `s = 9` (~780 m wide), stretched taller in Y (`s*1.5–1.7`).
+8 instances of `coastal_cliff_04` arranged around the bay as a **uniform ring**: the 4 edge
+pieces sit at radius `kEdge = 470` on the axes, and the 4 corner pieces at the **same radius**
+(`kCorner = kEdge × 0.7071 ≈ 332` axial → radius 470). Making the corners share the edge radius
+closed the diagonal **void** that used to show between water and cliffs (the corners previously
+bulged out to radius ~665). All sit just inside the ±512 water edge so land **covers the water
+tile edge** (hides the seam). Each is rotated to face inward via `faceIn(px,pz) = atan2(-px,-pz)`.
+Base scale `s = 9` (~780 m wide), stretched taller in Y (`s × 1.5 − 1.7`). The heavy overlap of
+8 × 780 m pieces around a ~470 m ring gives a continuous coastline.
 
-### Procedural terrain (`src/graphics/Terrain.{h,cpp}` + `terrain.vert/frag`) — CURRENTLY UNUSED
-A noise-displaced grid (FBM + radial island falloff) that makes procedural mountains. The
-fragment shader supports **triplanar PBR** (rock/grass/snow, blended by slope/height) with a
-procedural fallback. It was replaced by the real cliff models (procedural shapes read as
-blobs), but is kept for reuse. `terrain/rock_diff.jpg` + `rock_nor.jpg` exist; grass/snow
-do not (would auto-activate if added). `RockGenerator.{h,cpp}` similarly makes a procedural
-boulder mesh and is unused but kept.
+### Procedural terrain — REMOVED
+An earlier noise-displaced terrain (`Terrain` + `terrain.vert/frag`, FBM + island falloff +
+triplanar PBR) was **removed** — the real Poly Haven cliff scans look far better (procedural
+shapes read as blobs). `RockGenerator.{h,cpp}` remains **only** as a procedural fallback used if
+the foreground rock's glTF fails to load.
 
 ---
 
 ## 10. Water Interaction (implemented)
 
-- **Rain** (`water/RainSystem`): falling streaks, central splash jets, and **expanding
-  ripple ring** clusters rendered in `standard.frag` (SSBO of ripple centres+age, binding 4).
-  Ripples fade via `smoothstep` tail-off (tuned to not "pop" off).
+- **Rain** (`water/GPURain`, **fully GPU**): up to 120 K drops live in an SSBO, advanced by one
+  `rain_update.comp` compute dispatch/frame; streaks + splash columns draw **attributelessly**
+  from the SSBO (2 instanced draws, no CPU per-drop loop, no vertex upload). **Expanding ripple
+  rings** are the only CPU piece — a throttled spawner (~`480 / lifetime` rings/s) feeds a 512-cap
+  SSBO (binding 4) that `standard.frag` reads to perturb the water normal. See §13/TECH-OVERVIEW.
 - **Interactive disturbance** (`ocean/GPUDisturbance`): press **C** to fire a wave ~40 m in
-  front of the camera. A GPU height field that propagates and feeds the water normals; also
-  used per-frame by the vehicle wakes.
-- **CPU water grid** (`water/WaterSimulation`): a separate physics grid driving rain ripples.
+  front of the camera. A GPU wave-equation height field that propagates and feeds the water
+  normals; also driven per-frame by the vehicle stern wakes.
 - **Ocean → object (buoyancy):** vehicles float, bob, and tilt to the surface — see §8.
-- **Object → ocean (wakes):** moving vehicles inject ripples (`GPUDisturbance`) **and** spawn
-  foam (`WakeFoam`) — see §8.
+- **Object → ocean (wakes):** moving vehicles inject per-boat-scaled ripples (`GPUDisturbance`) —
+  see §8. There is no foam particle system; foam is the shader's FFT-Jacobian whitecaps.
 
 ### Ocean height sampling (CPU readback) — `GPUFFTOcean`
 The displacement texture is read back to the CPU once per render frame via a **double-buffered
@@ -462,37 +459,34 @@ height data is 1 frame stale (negligible for buoyancy) with no stall. Sampling A
 
 ## 11. Suggested Next Steps (roadmap)
 
-The core **dynamic water ↔ object interaction** is now implemented (buoyancy + ripple wakes +
-foam wakes). Remaining polish / next features:
+The core **dynamic water ↔ object interaction** is implemented (force-based buoyancy + per-boat
+ripple wakes) and the scene is closed (uniform cliff ring, no corner void). Remaining polish /
+next features:
 
 1. **Texturing the yacht/ship** — they shipped with no textures (flat base colours). Find
    textured models or author materials. Add **embedded-`.glb`-texture** support in `Model.cpp`
    for self-contained Sketchfab exports (loader currently handles external URIs only).
-2. **Foam tuning** — `WakeFoam` emit rate/size/life and the `wakefoam.frag` look are easy to
-   push (more spray, longer-lived trail, brighter core). Could also add bow spray.
-3. **Buoyancy realism** — currently kinematic (snap to surface + tilt). Could add inertia/damping
-   so boats lag the waves slightly instead of rigidly following.
-4. **Polish:** seal the last corner gaps in the cliff ring; optional water-edge fade.
+2. **Foam** — there is no foam particle system; the look is shader whitecaps + disturbance
+   ripples. A dedicated bow-spray / persistent trail (e.g. a world-space foam coverage texture)
+   could be added back if a richer wake is wanted.
+3. **Merge ray tracing** — analytic ray-traced reflections already exist on `deploy-rt`; a future
+   merge could bring them to `clean-deploy-v1` (kept separate for now).
+4. **Buoyancy realism** — already force-based 6-DOF; could add more inertia/lag tuning per hull.
 
 ---
 
 ## 12. Known Issues / Caveats
 
-- **Uncommitted work** — the entire scene/model/vehicle system is not committed (see §2).
-- **`.gitignore`** — now fixed (was broken with quoted entries). The 774 stale `build/`
-  files are still tracked in the index from before the fix; untrack with
-  `git rm -r --cached build/` (see §2).
-- **Water tile edge** is hidden behind the cliff ring, but tiny **corner gaps** remain
-  visible from a top-down view.
-- **Buoyancy is kinematic** — vehicles snap to the surface + tilt each frame (no inertia/lag).
-  It is choppiness-corrected (§8) so they track the right wave; bigger waves no longer drift
-  the hull beside the crest. Tune feel via the `wave tilt` ImGui slider.
+- **All work is committed** on `clean-deploy-v1` (tree is clean — see §2).
+- **Cliff ring is closed** — the corner void was fixed by making the corner pieces share the edge
+  radius (§9). No remaining diagonal gaps at eye level or elevated views.
+- **Buoyancy is force-based 6-DOF** (heave/pitch/roll from per-facet Archimedes forces, §8).
+  It is choppiness-corrected so hulls track the right wave even as waves grow.
 - **Yacht & big-ship are untextured** (flat base-colour) — a model limitation.
 - **Embedded-texture `.glb`** files won't show textures (loader handles external URIs only).
-- `assets/models/test_avocado.glb` is an **unused loader test asset** (Khronos sample) — safe
-  to delete; nothing references it.
 - A faint **FFT seam** can appear on the water from high/far camera angles (mostly hidden by
   cliffs and not visible at eye level).
+- **Ray tracing is on `deploy-rt` only** — `clean-deploy-v1` intentionally has none (§2).
 - **Windows 11:** assessed as buildable as-is after FIX-1/FIX-2 (see §3a for the full,
   pinpointed assessment of remaining low-risk items).
 
@@ -516,10 +510,20 @@ foam wakes). Remaining polish / next features:
 | Esc | Exit |
 
 ### On-screen ImGui panel ("Controls" window)
-A Dear ImGui panel shows **FPS + ocean readback ms** and live sliders: wind speed, height
-scale, choppiness, time scale (ocean tuning), plus **wave tilt** (buoyancy tilt strength) and
-**wake strength** (ripple amplitude vehicles inject). Input is gated by `io.WantCaptureMouse/
-Keyboard` so interacting with the panel doesn't drive the camera.
+A Dear ImGui panel shows **FPS + ocean readback ms** and live sliders grouped into collapsing
+sections (input gated by `io.WantCaptureMouse/Keyboard` so the panel doesn't drive the camera):
+- **Rain** — spawn rate (0–50), fall speed, drop size, opacity, splash height, ripple lifetime
+  (0.5–5 s), ring speed, ring strength, C-key splash strength.
+- **Water** — wind speed, wave height, choppiness, horizontal displace, time scale, sea maturity,
+  overall amplitude, mid-wave detail, depth-tint falloff, deep/shallow colours, boat wake strength.
+- **Lighting** — reflection strength, horizon/scatter/sun colours, sun azimuth/elevation, sun
+  glint/glitter, HDR exposure, and a **sky selector** (`sky_1/2/3`, `environment_1`).
+- **Vehicles** — a per-boat **speed** slider for each of the three vehicles.
+- **Scene** — a **"Central rock"** checkbox to show/hide the lone rock (also frees its collision
+  space when off, so boats pass through it).
+
+> The capillary slider and the below-horizon-blend slider were intentionally removed (the former
+> was a no-op at this grid resolution; the latter is now a fixed 0.7 in `standard.frag`).
 
 ### Recording → video
 Frames save to `frames/frame_%d.png` (start at 0), captured at the 60 FPS fixed step:
@@ -552,9 +556,9 @@ ffmpeg -framerate 60 -start_number 0 -i frames/frame_%d.png -c:v libx264 -pix_fm
    `src/ocean/GPUFFTOcean.cpp` (the FFT dispatch + CPU height readback).
 2. Build in `build_linux/` and run to see the current scene (§3). Note the new deps: **Dear
    ImGui** and `glm/gtc/quaternion.hpp` are used — a fresh `cmake` reconfigure picks them up.
-3. The core interaction is **done**: buoyancy (choppiness-correct, §8), ripple wakes, and
-   **foam wakes** (`WakeFoam`, §8/§10). Next features are in §11 (texturing the ship/yacht,
-   foam/buoyancy tuning, cliff-corner polish).
+3. The core interaction is **done**: force-based buoyancy (choppiness-correct, §8) and per-boat
+   scaled ripple wakes (§8). Rain is fully GPU (§10). Next features are in §11 (texturing the
+   ship/yacht, optional foam/bow-spray, merging the `deploy-rt` ray tracing).
 4. **Buoyancy gotcha:** always sample `ocean.sampleSurfaceHeight/Normal` (choppiness-correct),
    never `sampleOceanHeight` directly — the latter makes hulls drift beside the wave (§6/§8).
 5. When touching the FFT, re-read §6 carefully — the data layout, normalization, ping-pong
