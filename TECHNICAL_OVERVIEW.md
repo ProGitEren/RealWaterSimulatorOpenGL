@@ -180,11 +180,22 @@ the water, and expanding **ripple rings** drawn into the water surface.
    spreading ring on the water.
 
 ### Performance optimization (important for the presentation)
+- **Per-pixel ripple early-out (the big one — `standard.frag`).** The rain ripple **rings are drawn
+  by the water fragment shader**, which loops over up to **512 ripples × 4 rings per fragment**. With
+  the ocean filling the screen (~600 K fragments) that was up to **~1.2 billion iterations/frame** —
+  fine on a high-end GPU but it makes weaker (e.g. Windows laptop / integrated) GPUs stutter. The
+  optimization: each ripple has a tiny footprint, so we **reject far ripples with a cheap
+  squared-distance test *before* the `normalize()`/`sin()` and the inner ring loop**, reuse that
+  `sqrt` for the direction (no second `normalize`), and skip ripple work entirely for fragments
+  >350 m from the camera. This is **mathematically identical** (skipped ripples contribute exactly
+  0 — no visual change) but cuts the cost from "always 512 ripples" to "only the few actually
+  nearby." **This is what unstuck the Windows build.**
 - **Ripple-budget throttling (`RainSystem.cpp:43`).** The ripple SSBO holds only **512** entries.
   Every impact would spawn ~1800 ripples/sec and the buffer would evict them in ~0.3 s — so the
   lifetime slider would do nothing. Instead a **steady budget** creates ripples at a rate
   `kRippleTarget(480) / lifetime`, so the field stays ≈ full at any setting and the lifetime slider
-  purely controls survival time. **This decouples cost from intensity.**
+  purely controls survival time. **This decouples GPU cost from rain intensity** — even at the max
+  500 drops/frame, the ripple count (and therefore the shader cost) stays capped at 512.
 - **One dynamic VBO, two draw calls.** All streaks + all splash columns are packed into a single
   vertex buffer; `render()` draws streaks (thin, faint) and splash jets (thicker, brighter) as two
   `GL_LINES` ranges with one buffer upload. No per-particle draw calls.
@@ -194,7 +205,7 @@ the water, and expanding **ripple rings** drawn into the water surface.
 ### Key numbers / parameters
 | Parameter | Default | Range | Effect |
 |---|---|---|---|
-| spawn rate | 50 /frame | 0–50 | rain intensity |
+| spawn rate | 50 /frame | 0–500 | rain intensity (drops spawned per frame) |
 | fall speed | 77 m/s | 20–140 | drop speed + streak length |
 | drop size | 1.0 | 0.3–3 | streak length + thickness |
 | opacity | 0.22 | 0–1 | streak transparency |
@@ -461,7 +472,9 @@ next = (2·current − previous + waveC · laplacian) · damping
   boats), and **one async PBO readback** of the 512² displacement (the readback is double-buffered
   to avoid a GPU stall — the single biggest perf decision on the buoyancy side).
 - **Key optimizations:** Stockham FFT (no shared-mem cap, enables 512); async PBO height readback
-  (no stall); rain ripple-budget throttling (fixed 512-entry SSBO); camera-local rain; cubemap
+  (no stall); **per-pixel ripple early-out** (squared-distance reject before the heavy math — the
+  fix that unstuck weaker/Windows GPUs); rain ripple-budget throttling (fixed 512-entry SSBO);
+  camera-local rain; cubemap
   skybox depth-trick (no overdraw); single VBO / two draw calls for all rain.
 
 ---

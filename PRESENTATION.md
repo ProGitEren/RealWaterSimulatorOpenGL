@@ -107,10 +107,13 @@ initial spectrum  →  phase (time)  →  current spectrum (+choppy dx,dz)
 - On impact → **splash jet** (water column) + **ripple ring** on the surface
 - Ripple rings drawn by the **water shader** (SSBO of centres+ages)
 
-**Optimization:** fixed **512-ripple budget** → cost is constant regardless of intensity;
-one VBO + two draw calls; camera-local only
+**Optimizations:**
+- **Per-pixel ripple early-out** — reject far ripples with a cheap distance test *before* the heavy
+  math (the fix that unstuck weaker / Windows GPUs; **no visual change**)
+- Fixed **512-ripple budget** → GPU cost constant even at 500 drops/frame
+- One VBO + two draw calls; camera-local only
 
-**Look at:** `src/water/RainSystem.cpp` + `assets/shaders/rain.*`
+**Look at:** `src/water/RainSystem.cpp` + `assets/shaders/standard.frag` (ripple loop)
 
 ---
 
@@ -217,6 +220,8 @@ PBR ocean, composited in **HDR** then tonemapped:
 - Big wins:
   - **Stockham FFT** → enables true 512 (no shared-mem cap)
   - **Async PBO readback** of wave heights → no GPU stall for buoyancy
+  - **Per-pixel ripple early-out** → was ~1.2 B iterations/frame; now only nearby ripples
+    (fixed the "stuck" on weaker / Windows GPUs, no visual change)
   - **Rain budget** (fixed 512-ripple SSBO) → cost independent of intensity
   - **Camera-local rain**, **skybox depth-trick**, **batched rain draws**
 
