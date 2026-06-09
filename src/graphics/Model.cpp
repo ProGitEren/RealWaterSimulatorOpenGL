@@ -143,6 +143,8 @@ void Model::loadFromFile(const std::string& path) {
         for (size_t v = 0; v < vertexCount; ++v) {
             glm::vec3 p(pos[v * 3 + 0], pos[v * 3 + 1], pos[v * 3 + 2]);
             vertices[v].position = glm::vec3(world * glm::vec4(p, 1.0f));    // bake transform
+            m_aabbMin = glm::min(m_aabbMin, vertices[v].position);
+            m_aabbMax = glm::max(m_aabbMax, vertices[v].position);
             glm::vec3 n = nrm.empty() ? glm::vec3(0.0f, 1.0f, 0.0f)
                                       : glm::vec3(nrm[v * 3 + 0], nrm[v * 3 + 1], nrm[v * 3 + 2]);
             vertices[v].normal = glm::normalize(normalMat * n);

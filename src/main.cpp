@@ -607,7 +607,14 @@ int main() {
 
                     // Wake churns off the STERN (trailing waterline), not the hull
                     // centre, so it streams from where the boat meets the water.
-                    glm::vec2 sternXZ = p - glm::vec2(dir.x, dir.z) * (v.hullLength * 0.5f);
+                    // Shift to the VISIBLE hull centre first (boat meshes can sit
+                    // off their glTF origin, which made the wake appear off to one
+                    // side — worst on the big boats), then back to the stern.
+                    glm::vec3 lc = v.scale * v.model->localCenter();
+                    float vyaw = v.heading + v.modelYaw;
+                    glm::vec2 hullCtr = p + glm::vec2(lc.x * std::cos(vyaw) + lc.z * std::sin(vyaw),
+                                                     -lc.x * std::sin(vyaw) + lc.z * std::cos(vyaw));
+                    glm::vec2 sternXZ = hullCtr - glm::vec2(dir.x, dir.z) * (v.hullLength * 0.5f);
                     disturbance.disturb(sternXZ,
                                         wakeStrength * glm::min(1.0f, v.speed / 12.0f));
                 }
