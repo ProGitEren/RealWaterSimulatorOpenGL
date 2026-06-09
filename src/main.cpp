@@ -396,6 +396,8 @@ int main() {
     float     sunGlint          = 4.0f;   // tight specular highlight intensity
     float     sunGlitter        = 0.4f;   // broad sparkle intensity
     float     hdrExposure       = 1.4f;
+    bool      rtReflect         = true;   // analytic ray-traced reflections (boats + rock)
+    float     rtStrength        = 0.9f;
 
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -743,6 +745,10 @@ int main() {
                 ImGui::SeparatorText("Scatter & tone");
                 ImGui::ColorEdit3("scatter colour", &scatterColor.x);
                 ImGui::SliderFloat("HDR exposure", &hdrExposure, 0.2f, 4.0f);
+
+                ImGui::SeparatorText("Ray-traced reflections (boats + rock)");
+                ImGui::Checkbox("enable RT", &rtReflect);
+                ImGui::SliderFloat("RT strength", &rtStrength, 0.0f, 1.0f);
             }
 
             if (ImGui::CollapsingHeader("Vehicles")) {
@@ -818,6 +824,24 @@ int main() {
                 shader.setFloat("uSunGlint",          sunGlint);
                 shader.setFloat("uSunGlitter",        sunGlitter);
                 shader.setFloat("uExposure",          hdrExposure);
+                // analytic ray-traced reflection proxies (boats as boxes, rock as ellipsoid)
+                shader.setInt("uRTReflect", rtReflect ? 1 : 0);
+                shader.setFloat("uRTStrength", rtStrength);
+                int nb = 0;
+                for (size_t bi = 0; bi < vehicles.size(); ++bi) {
+                    const Vehicle& bv = vehicles[bi];
+                    float halfH = std::max(2.0f, bv.hullLength * 0.06f);
+                    glm::vec3 bc = bv.phys.position; bc.y += halfH;
+                    const std::string ix = std::to_string(nb);
+                    shader.setVec4("uBoxCenter[" + ix + "]", glm::vec4(bc, bv.heading));
+                    shader.setVec4("uBoxHalf["   + ix + "]", glm::vec4(bv.wakeWidth, halfH, bv.hullLength * 0.5f, 0.0f));
+                    shader.setVec4("uBoxColor["  + ix + "]", glm::vec4(0.70f, 0.72f, 0.78f, 1.0f));
+                    ++nb;
+                }
+                shader.setInt("uNumBoxes", nb);
+                shader.setVec4("uRock",      glm::vec4(60.0f, 5.0f, 30.0f, 0.0f));
+                shader.setVec4("uRockRadii", glm::vec4(48.0f, 35.0f, 48.0f, 0.0f));
+                shader.setVec3("uRockColor", glm::vec3(0.46f, 0.44f, 0.41f));
             }
             uploadRipples(shader, activeRipples);
             oceanMesh.draw(shader, camera.Position);

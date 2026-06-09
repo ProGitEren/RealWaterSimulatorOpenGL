@@ -37,6 +37,17 @@ uniform float uSunGlitter;
 uniform float uExposure;
 uniform float uMidWaveDetail;
 
+// --- analytic ray-traced reflection proxies (boats as boxes, rock as ellipsoid) ---
+uniform int   uRTReflect;       // enable
+uniform float uRTStrength;      // blend amount over the cubemap reflection
+uniform int   uNumBoxes;
+uniform vec4  uBoxCenter[16];   // xyz = world centre, w = yaw (radians)
+uniform vec4  uBoxHalf[16];     // xyz = half-extents (beam/2, height/2, length/2)
+uniform vec4  uBoxColor[16];    // rgb = albedo
+uniform vec4  uRock;            // xyz = centre
+uniform vec4  uRockRadii;       // xyz = radii
+uniform vec3  uRockColor;
+
 // ---- procedural mid-frequency normal detail ----
 vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
     float warp = 0.45 * sin(dot(worldXZ, vec2(-0.21, 0.98)) * 0.42 + time * 0.55)
@@ -49,6 +60,55 @@ vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
     slope += normalize(vec2(-0.96, -0.28)) * cos(dot(worldXZ, normalize(vec2(-0.96, -0.28))) * (6.2831853 / 18.0)                  - time * 0.72) * 0.030;
 
     return normalize(baseNormal + vec3(-slope.x, 0.0, -slope.y) * uMidWaveDetail);
+}
+
+// ---- analytic ray-traced reflections: trace the reflected ray vs scene proxies ----
+float hitBox(vec3 ro, vec3 rd, vec3 c, float yaw, vec3 h, out vec3 nrm) {
+    vec3 F  = vec3(sin(yaw), 0.0, cos(yaw));   // length axis (boat forward)
+    vec3 Rt = vec3(cos(yaw), 0.0, -sin(yaw));  // beam axis
+    vec3 d  = ro - c;
+    vec3 lo = vec3(dot(d, Rt), d.y, dot(d, F));
+    vec3 ld = vec3(dot(rd, Rt), rd.y, dot(rd, F));
+    vec3 inv = 1.0 / ld;
+    vec3 t0 = (-h - lo) * inv;
+    vec3 t1 = ( h - lo) * inv;
+    vec3 tmin = min(t0, t1), tmax = max(t0, t1);
+    float tn = max(max(tmin.x, tmin.y), tmin.z);
+    float tf = min(min(tmax.x, tmax.y), tmax.z);
+    if (tf < tn || tf < 0.0) return -1.0;
+    vec3 ln = (tn == tmin.x) ? vec3(-sign(ld.x), 0.0, 0.0)
+            : (tn == tmin.y) ? vec3(0.0, -sign(ld.y), 0.0)
+                             : vec3(0.0, 0.0, -sign(ld.z));
+    nrm = normalize(Rt * ln.x + vec3(0.0, 1.0, 0.0) * ln.y + F * ln.z);
+    return tn > 0.0 ? tn : tf;
+}
+float hitEllipsoid(vec3 ro, vec3 rd, vec3 c, vec3 r, out vec3 nrm) {
+    vec3 o = (ro - c) / r;
+    vec3 d = rd / r;
+    float a = dot(d, d), b = 2.0 * dot(o, d), cc = dot(o, o) - 1.0;
+    float disc = b * b - 4.0 * a * cc;
+    if (disc < 0.0) return -1.0;
+    float t = (-b - sqrt(disc)) / (2.0 * a);
+    if (t < 0.0) return -1.0;
+    nrm = normalize((ro + rd * t - c) / (r * r));
+    return t;
+}
+vec4 traceReflection(vec3 ro, vec3 rd) {
+    float best = 1e9; vec3 col = vec3(0.0); float hit = 0.0; vec3 n;
+    for (int i = 0; i < uNumBoxes; i++) {
+        float t = hitBox(ro, rd, uBoxCenter[i].xyz, uBoxCenter[i].w, uBoxHalf[i].xyz, n);
+        if (t > 0.05 && t < best) {
+            best = t;
+            col  = uBoxColor[i].rgb * (0.45 + 0.55 * max(dot(n, uSunDir), 0.0));
+            hit  = 1.0;
+        }
+    }
+    float t = hitEllipsoid(ro, rd, uRock.xyz, uRockRadii.xyz, n);
+    if (t > 0.05 && t < best) {
+        col = uRockColor * (0.45 + 0.55 * max(dot(n, uSunDir), 0.0));
+        hit = 1.0;
+    }
+    return vec4(col, hit);
 }
 
 void main() {
@@ -148,6 +208,12 @@ void main() {
     vec3  envReflect   = texture(skybox, R).rgb * uReflectStrength;
     float belowHorizon = smoothstep(0.0, -0.2, R.y);
     vec3  reflection   = mix(envReflect, uHorizonColor, belowHorizon * 0.7);
+    // Ray-trace the reflected ray against scene proxies (boats, rock) and layer
+    // those hits over the cubemap reflection — genuine reflections of the boats.
+    if (uRTReflect == 1) {
+        vec4 rt = traceReflection(FragPos, R);
+        reflection = mix(reflection, rt.rgb, rt.a * uRTStrength);
+    }
 
     // ---- REFRACTION: depth-tinted water body ----
     // Deep troughs = dark navy (long optical path), crests = brighter teal.
