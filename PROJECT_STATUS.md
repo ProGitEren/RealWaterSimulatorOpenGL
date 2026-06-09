@@ -5,8 +5,9 @@
 > patches without re-discovering how things work. It documents the architecture, the
 > exact current state, every subsystem, the known issues, and the conventions to follow.
 >
-> **Last updated:** reflects branch `clean-deploy-v1` — the current deployment
-> branch. The tree is **clean / fully committed** (see [§2 Git State](#2-git-state)).
+> **Last updated:** reflects branch `clean-deploy-v2` — the current deployment branch
+> (a code-cleanliness pass branched from `clean-deploy-v1`; runtime behaviour is
+> unchanged). The tree is **clean / fully committed** (see [§2 Git State](#2-git-state)).
 
 ---
 
@@ -35,10 +36,12 @@ the Linux dependency/build guide.
 
 ## 2. Git State
 
-- **Current branch:** `clean-deploy-v1` (the deployment branch this doc tracks)
+- **Current branch:** `clean-deploy-v2` (the deployment branch this doc tracks; a
+  behaviour-preserving cleanup of `clean-deploy-v1`)
 - **Remote:** `origin` → `git@github.com:ProGitEren/RealWaterSimulatorOpenGL.git`
 - **Tree status:** **clean** — all feature work is committed and pushed.
-- **Other branches:** `main`; `deploy-rt` (adds analytic ray-traced reflections, see below);
+- **Other branches:** `clean-deploy-v1` (the pre-cleanup snapshot); `main`;
+  `deploy-rt` (adds analytic ray-traced reflections, see below);
   `eren-dev-stockham-fft-pbr` (older FFT/PBR line of work).
 
 The entire scene — GPU FFT ocean, GPU rain, glTF model loader, coastal-cliff ring, the three
@@ -46,7 +49,7 @@ vehicles with buoyancy + per-boat wakes, the full ImGui control panel — is **c
 is no at-risk uncommitted work; just build (§3) and run.
 
 ### Ray tracing lives on a separate branch
-`clean-deploy-v1` deliberately has **no ray tracing**. Analytic ray-traced reflections (boats as
+`clean-deploy-v2` deliberately has **no ray tracing**. Analytic ray-traced reflections (boats as
 OBBs + the rock as an ellipsoid, intersected in the water fragment shader) live only on the
 **`deploy-rt`** branch. Keep them there unless a future merge is explicitly requested.
 
@@ -374,20 +377,21 @@ bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0,  wakeWidth 20, hullLen
 ```
 
 ### Buoyancy (vehicles float, bob, and tilt) — DONE
-**Force-based 6-DOF buoyancy** (`src/water/BoatPhysics.{h,cpp}`). Each vehicle owns a
-`BoatPhysics` that solves heave + pitch + roll from per-facet Archimedes forces:
+**Spring-damper 6-DOF buoyancy** (`src/water/BoatPhysics.{h,cpp}`). Each vehicle owns a
+`BoatPhysics` that solves heave + pitch + roll from the ocean surface under the hull:
 - The hull is a grid of facets (facetsX × facetsZ) in the boat's local frame.
-- Each frame: transform facets to world, look up `sampleSurfaceHeight` under each, and for
-  submerged facets add an up-force ∝ submerged depth; the **sum** drives heave, and the
-  **lever-arm torques** (fore/aft → pitch, port/starboard → roll) drive rotation. Damped
-  integration (`linearDamp`/`angularDamp`) keeps it stable; tilt is clamped to ±0.6 rad.
+- Each frame: transform facets to world and look up `sampleSurfaceHeight` under each. Their
+  **average height** is the heave target; the fitted **fore/aft and port/starboard height
+  slopes** are the pitch/roll targets. Critically-damped springs (`linearDamp`/`angularDamp`)
+  drive the hull toward those targets — more stable than summing raw Archimedes forces (which
+  sink the hull unless perfectly tuned); tilt is clamped to ±0.6 rad.
 - **Navigation (XZ + yaw) stays scripted**; only the vertical + tilt are dynamic. So boats
   follow their path but physically bob/pitch/roll on the swell.
 - A long ship's facets span many wavelengths, so short chop averages out — big ships ride
   smoothly, small ones bob lively. ImGui: float strength, heave damping, tilt damping.
-- **Critical detail:** sampling uses `ocean.sampleSurfaceHeight()` (choppiness-correct —
-  inverts the FFT horizontal displacement), NOT `sampleOceanHeight`, so hulls sit on the wave
-  they're actually on even as waves grow — see §6 and §12.
+- **Critical detail:** sampling uses `ocean.sampleSurfaceHeight()`, which is choppiness-correct
+  — it inverts the FFT horizontal displacement so hulls sit on the wave they're actually on
+  even as waves grow — see §6 and §12.
 
 > History: this replaced an earlier kinematic snap-to-surface (single point → multi-point +
 > low-pass). The force model gives emergent heave/pitch/roll. Tunable per vehicle.
@@ -470,23 +474,23 @@ next features:
    ripples. A dedicated bow-spray / persistent trail (e.g. a world-space foam coverage texture)
    could be added back if a richer wake is wanted.
 3. **Merge ray tracing** — analytic ray-traced reflections already exist on `deploy-rt`; a future
-   merge could bring them to `clean-deploy-v1` (kept separate for now).
+   merge could bring them to `clean-deploy-v2` (kept separate for now).
 4. **Buoyancy realism** — already force-based 6-DOF; could add more inertia/lag tuning per hull.
 
 ---
 
 ## 12. Known Issues / Caveats
 
-- **All work is committed** on `clean-deploy-v1` (tree is clean — see §2).
+- **All work is committed** on `clean-deploy-v2` (tree is clean — see §2).
 - **Cliff ring is closed** — the corner void was fixed by making the corner pieces share the edge
   radius (§9). No remaining diagonal gaps at eye level or elevated views.
-- **Buoyancy is force-based 6-DOF** (heave/pitch/roll from per-facet Archimedes forces, §8).
+- **Buoyancy is spring-damper 6-DOF** (heave/pitch/roll from a per-facet spring toward the surface, §8).
   It is choppiness-corrected so hulls track the right wave even as waves grow.
 - **Yacht & big-ship are untextured** (flat base-colour) — a model limitation.
 - **Embedded-texture `.glb`** files won't show textures (loader handles external URIs only).
 - A faint **FFT seam** can appear on the water from high/far camera angles (mostly hidden by
   cliffs and not visible at eye level).
-- **Ray tracing is on `deploy-rt` only** — `clean-deploy-v1` intentionally has none (§2).
+- **Ray tracing is on `deploy-rt` only** — `clean-deploy-v2` intentionally has none (§2).
 - **Windows 11:** assessed as buildable as-is after FIX-1/FIX-2 (see §3a for the full,
   pinpointed assessment of remaining low-risk items).
 

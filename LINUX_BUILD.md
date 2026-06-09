@@ -68,8 +68,8 @@ The repository includes the 3D assets it needs to run (`assets/models/`, `assets
 
 ## 3. Build
 
-Use a dedicated `build_linux/` directory (the tracked `build/` may contain stale Windows
-artifacts; keeping them separate avoids collisions):
+Use a dedicated `build_linux/` directory so the Linux and Windows build trees stay separate
+(every `build*/` directory is git-ignored, so none of them is ever committed):
 
 ```bash
 mkdir -p build_linux
@@ -175,16 +175,16 @@ prime-run ./RealWaterSimulator
 ```
 RealWaterSimulator/
 ├── assets/
-│   ├── shaders/    GLSL: ocean (standard + fft_*.comp), object, terrain, rain, skybox
-│   ├── textures/   skybox cubemaps + tiling terrain textures
+│   ├── shaders/    GLSL: ocean (standard + fft_*.comp), object, rain, disturbance, skybox
+│   ├── textures/   skybox cubemaps
 │   └── models/     glTF models (rocks, coastal cliff, jet-ski, yacht, big-ship)
-├── external/       Vendored: glad, glfw, glm, stb, cgltf
+├── external/       Vendored: glad, glfw, glm, stb, cgltf, imgui
 ├── src/
 │   ├── main.cpp    Scene setup, render loop, input, vehicles
 │   ├── core/       Window (GLFW), Camera
-│   ├── graphics/   Shader, Mesh, Model (glTF loader), Texture, Terrain, RockGenerator
+│   ├── graphics/   Shader, Mesh, Model (glTF loader), Texture, RockGenerator
 │   ├── ocean/      GPUFFTOcean (Stockham FFT), OceanMesh, GPUDisturbance
-│   └── water/      WaterSimulation, RainSystem
+│   └── water/      GPURain, BoatPhysics
 ├── CMakeLists.txt  Cross-platform build (Windows + Linux)
 ├── LINUX_BUILD.md  This file
 └── PROJECT_STATUS.md  Full architecture & developer handoff
