@@ -16,8 +16,7 @@ set(SOURCES
     src/ocean/GPUFFTOcean.cpp
     src/ocean/OceanMesh.cpp
     src/ocean/GPUDisturbance.cpp
-    src/water/WaterSimulation.cpp
-    src/water/RainSystem.cpp
+    src/water/GPURain.cpp
     src/water/BoatPhysics.cpp
 )
 

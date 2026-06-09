@@ -7,8 +7,7 @@
 #include "ocean/GPUFFTOcean.h"
 #include "ocean/GPUDisturbance.h"
 #include "ocean/OceanMesh.h"
-#include "water/WaterSimulation.h"
-#include "water/RainSystem.h"
+#include "water/GPURain.h"
 #include "water/BoatPhysics.h"
 
 #include "imgui.h"
@@ -142,7 +141,7 @@ int main() {
 
     Shader shader("../assets/shaders/standard.vert", "../assets/shaders/standard.frag");
     Shader debugWireframeShader("../assets/shaders/standard.vert", "../assets/shaders/debug_wireframe.frag");
-    Shader rainShader("../assets/shaders/rain.vert", "../assets/shaders/rain.frag");
+    Shader rainShader("../assets/shaders/rain_gpu.vert", "../assets/shaders/rain_gpu.frag");
     Shader skyboxShader("../assets/shaders/skybox.vert", "../assets/shaders/skybox.frag");
     Shader objectShader("../assets/shaders/object.vert", "../assets/shaders/object.frag");
     objectShader.use();
@@ -330,9 +329,8 @@ int main() {
         }
     }
 
-    // --- PHYSICS (rain ripples) ---
-    WaterSimulation water(kPhysicsGridSize, kPhysicsTileSize, kFixedDt, 8.0f, 0.998f);
-    RainSystem      rainSystem(kPhysicsGridSize, kPhysicsTileSize);
+    // --- RAIN (GPU-driven: drops live + update in an SSBO; instanced draw) ---
+    GPURain         rainSystem(120000u); // max drops the GPU buffer holds
     initRippleSSBO();
 
     // --- LOOP STATE ---
@@ -362,7 +360,7 @@ int main() {
     float buoyancyStrength = 3.0f; // up-force per metre submerged (higher = floats higher/firmer)
     float buoyancyResponse = 2.0f; // heave damping (higher = settles faster, less bobbing)
     float angularDamp      = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
-    float wakeStrength = 0.02f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
+    float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
     // --- Navigation realism (gradual turns, gentle wander, banking) ---
     float boatTurnRate = 0.45f; // max steer-back turn rate (rad/s) — gradual, not a snap
     float boatWander   = 0.12f; // gentle heading-weave amplitude so paths curve naturally
@@ -537,23 +535,18 @@ int main() {
         lastX = xpos;
         lastY = ypos;
 
-        // Feed the rain system its UI knobs before it steps this frame.
-        rainSystem.spawnRate      = rainSpawnRate;
-        rainSystem.fallSpeed      = rainFallSpeed;
-        rainSystem.dropSize       = rainDropSize;
-        rainSystem.splashHeight   = rainSplashHeight;
-        rainSystem.rippleLifetime = rippleLifetime;
-        {
-            const float wr = glm::radians(windDir);
-            rainSystem.windDrift = glm::vec2(std::cos(wr), std::sin(wr)) * (windStrength * 25.0f);
-        }
+        // Rain wind drift (from the wind UI), used by both update and render.
+        const float wr = glm::radians(windDir);
+        const glm::vec2 rainWindDrift = glm::vec2(std::cos(wr), std::sin(wr)) * (windStrength * 25.0f);
 
         // Physics update
         static float accumulator = 0.0f;
         accumulator = std::min(accumulator + deltaTime, kMaxAccumulatedTime);
         while (accumulator >= kFixedDt) {
-            water.update();
-            rainSystem.update(kFixedDt, camera.Position, &water);
+            // GPU rain: drops advance in a compute shader; ripple rings (cheap,
+            // throttled) spawn on the CPU to feed the water shader.
+            rainSystem.update(kFixedDt, camera.Position, rainWindDrift,
+                              rainFallSpeed, rainSpawnRate, rippleLifetime);
             ocean.update(kFixedDt);
             disturbance.update(kFixedDt);
 
@@ -873,12 +866,9 @@ int main() {
             glDepthMask(GL_TRUE);
 
 
-            // Rain after skybox — blends correctly over sky and water
-            rainShader.use();
-            rainShader.setFloat("uOpacity", rainOpacity);
-            rainShader.setVec3 ("kDropDir",
-                glm::normalize(glm::vec3(rainSystem.windDrift.x, -rainFallSpeed, rainSystem.windDrift.y)));
-            rainSystem.render(rainShader, projection, view, camera.Position);
+            // Rain after skybox — GPU instanced draw (reads the drop SSBO).
+            rainSystem.render(rainShader, projection, view,
+                              rainWindDrift, rainFallSpeed, rainDropSize, rainOpacity);
         }
 
         // Recording

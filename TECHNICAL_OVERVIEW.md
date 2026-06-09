@@ -33,7 +33,6 @@ RealWaterSimulatorOpenGL/
 │   │   └── GPUDisturbance.{h,cpp} ....... interactive wave ripples (C-key + boat wakes), GPU wave equation
 │   └── water/
 │       ├── RainSystem.{h,cpp} ........... rain drops + splashes + ripple rings (CPU particles)
-│       ├── WaterSimulation.{h,cpp} ...... legacy CPU water grid (kept; minor role)
 │       └── BoatPhysics.{h,cpp} .......... 6-DOF buoyancy (heave/pitch/roll from wave sampling)
 ├── assets/
 │   ├── shaders/ ........................ all GLSL (see per-section lists below)

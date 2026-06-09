@@ -1,0 +1,57 @@
+#version 460 core
+layout(local_size_x = 256) in;
+
+// GPU rain: every drop lives in this SSBO and is advanced entirely on the GPU.
+// No CPU per-drop loop, no per-frame vertex upload. struct = 2 vec4:
+//   pos.xyz = world position, pos.w  = fall speed (m/s)
+//   vel.xyz = unused/seed,    vel.w  = phase/seed for variation
+struct Drop { vec4 pos; vec4 vel; };
+
+layout(std430, binding = 0) buffer DropBuffer { Drop drops[]; };
+
+uniform float uDt;
+uniform vec3  uCamPos;       // drops respawn in a disc around the camera
+uniform vec2  uWindDrift;    // horizontal drift velocity (m/s)
+uniform float uFallSpeed;    // base fall speed
+uniform float uSpawnRadius;  // 100 m
+uniform uint  uCount;        // active drop count (= spawnRate-scaled)
+uniform float uTime;
+
+// cheap hash -> [0,1)
+float hash(uint n) {
+    n = (n << 13u) ^ n;
+    n = n * (n * n * 15731u + 789221u) + 1376312589u;
+    return float(n & 0x7fffffffu) / float(0x7fffffff);
+}
+
+void respawn(inout Drop d, uint id) {
+    float a = hash(id * 7u  + uint(uTime * 31.0)) * 6.2831853;
+    float r = sqrt(hash(id * 13u + uint(uTime * 17.0))) * uSpawnRadius;
+    d.pos.x = uCamPos.x + cos(a) * r;
+    d.pos.z = uCamPos.z + sin(a) * r;
+    d.pos.y = uCamPos.y + 30.0 + hash(id * 3u + uint(uTime * 11.0)) * 25.0;
+    d.pos.w = uFallSpeed + (hash(id * 5u) - 0.5) * 20.0; // per-drop speed
+    d.vel.w = hash(id * 23u);                             // stable per-drop seed
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uCount) return;
+
+    Drop d = drops[id];
+
+    // First-time init (y==0 sentinel) -> place it.
+    if (d.pos.w < 1e-4) respawn(d, id);
+
+    // Fall + wind drift.
+    d.pos.y -= d.pos.w * uDt;
+    d.pos.x += uWindDrift.x * uDt;
+    d.pos.z += uWindDrift.y * uDt;
+
+    // Hit the water (or drifted out of the disc) -> recycle to the top.
+    float dx = d.pos.x - uCamPos.x, dz = d.pos.z - uCamPos.z;
+    if (d.pos.y <= 0.5 || (dx*dx + dz*dz) > uSpawnRadius * uSpawnRadius * 1.2)
+        respawn(d, id);
+
+    drops[id] = d;
+}
