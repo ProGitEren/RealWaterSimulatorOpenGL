@@ -30,8 +30,10 @@ GPUFFTOcean::GPUFFTOcean(unsigned int resolution, float oceanSize, float windSpe
       m_windAngleDegrees(windAngleDegrees),
       m_choppiness(choppiness),
       m_heightScale(1.0f),        // 1/N normalization in displacement shader; modest scale
-      m_horizontalScale(0.35f),   // was 0.08 (crushed choppiness to invisibility); now visible
+      m_horizontalScale(0.9f),    // sideways crest pinch (choppiness mechanism)
       m_timeScale(2.0f),
+      m_seaMaturity(2.0f),
+      m_amplitude(1500.0f),
       m_windDirection(glm::normalize(glm::vec2(std::cos(glm::radians(windAngleDegrees)), std::sin(glm::radians(windAngleDegrees))))),
       m_currentPhaseIndex(0),
       m_initialSpectrumShader("../assets/shaders/fft_initial_spectrum.comp"),
@@ -169,6 +171,8 @@ void GPUFFTOcean::buildInitialSpectrum() {
     m_initialSpectrumShader.setFloat("oceanSize", m_oceanSize);
     m_initialSpectrumShader.setFloat("windSpeed", m_windSpeed);
     m_initialSpectrumShader.setVec2("windDirection", m_windDirection);
+    m_initialSpectrumShader.setFloat("OMEGA", m_seaMaturity);
+    m_initialSpectrumShader.setFloat("SPECTRUM_BOOST", m_amplitude);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_gaussianNoiseTexture);
     m_initialSpectrumShader.setInt("gaussianNoiseTexture", 0);
@@ -186,6 +190,16 @@ void GPUFFTOcean::setWindAngle(float degrees) {
     m_windAngleDegrees = degrees;
     m_windDirection = glm::normalize(glm::vec2(std::cos(glm::radians(degrees)),
                                                std::sin(glm::radians(degrees))));
+    buildInitialSpectrum();
+}
+
+void GPUFFTOcean::setSeaMaturity(float v) {
+    m_seaMaturity = glm::clamp(v, 0.84f, 5.0f);
+    buildInitialSpectrum();
+}
+
+void GPUFFTOcean::setAmplitude(float v) {
+    m_amplitude = glm::max(v, 0.0f);
     buildInitialSpectrum();
 }
 

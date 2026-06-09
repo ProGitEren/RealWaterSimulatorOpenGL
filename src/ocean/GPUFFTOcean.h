@@ -33,6 +33,12 @@ public:
     void setWindAngle(float degrees);                       // rebuilds the spectrum
     float getWindAngle() const { return m_windAngleDegrees; }
 
+    // Spectrum knobs (rebuild the initial spectrum on change)
+    float getSeaMaturity() const { return m_seaMaturity; }
+    float getAmplitude()   const { return m_amplitude; }
+    void  setSeaMaturity(float v);
+    void  setAmplitude(float v);
+
     // CPU-side ocean-surface sampling (Phase 0B). The displacement texture is
     // read back to the CPU once per update(); sampleOceanHeight returns the
     // vertical wave height (metres) at a world XZ, matching the GPU surface.
@@ -60,6 +66,8 @@ private:
     float m_heightScale;
     float m_horizontalScale;
     float m_timeScale;
+    float m_seaMaturity;
+    float m_amplitude;
     glm::vec2 m_windDirection;
     unsigned int m_currentPhaseIndex;
 

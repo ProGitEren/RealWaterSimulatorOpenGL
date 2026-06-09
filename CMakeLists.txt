@@ -13,15 +13,12 @@ set(SOURCES
     src/graphics/Model.cpp
     src/graphics/Texture.cpp
     src/graphics/RockGenerator.cpp
-    src/graphics/Terrain.cpp
     src/ocean/GPUFFTOcean.cpp
     src/ocean/OceanMesh.cpp
     src/ocean/GPUDisturbance.cpp
     src/water/WaterSimulation.cpp
     src/water/RainSystem.cpp
-    src/water/WakeFoam.cpp
     src/water/BoatPhysics.cpp
-    src/water/FoamMap.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

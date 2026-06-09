@@ -8,7 +8,7 @@ uniform mat4 projection;
 uniform vec3 viewPos;
 
 const vec3 kSunDir  = vec3(0.43193, 0.86386, 0.25932);
-const vec3 kDropDir = normalize(vec3(0.2, -1.0, 0.1)); // fall direction (down + wind bias)
+uniform vec3 kDropDir; // normalized fall + wind direction (set from CPU)
 
 out float vAlpha;
 out vec3  vColor;

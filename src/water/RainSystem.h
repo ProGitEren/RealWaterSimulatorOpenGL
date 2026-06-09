@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <deque>
 #include <vector>
 #include <glm/glm.hpp>
@@ -35,6 +36,14 @@ public:
 
     const std::deque<glm::vec3>& getActiveRipples() const { return m_activeRipples; }
 
+    // --- Runtime-tunable knobs (set from the UI each frame; sane defaults) ---
+    int       spawnRate      = 50;     // drops per frame (rain intensity)
+    float     fallSpeed      = 77.0f;  // base fall speed (m/s)
+    float     dropSize       = 1.0f;   // streak length + line-width multiplier
+    float     splashHeight   = 1.0f;   // splash jet height multiplier
+    float     rippleLifetime = 6.0f;   // seconds a ripple ring lives
+    glm::vec2 windDrift      = glm::vec2(10.0f, 7.0f); // horizontal wind velocity (m/s)
+
 private:
     int m_gridSize;
     float m_tileSize;
@@ -43,6 +52,8 @@ private:
     std::vector<Splash>   m_activeSplashes;
     std::deque<glm::vec3> m_activeRipples;
     std::vector<float>    m_rainVertices;
+    std::size_t           m_splashStart = 0; // float index where splash verts begin
+    float                 m_rippleBudget = 0.0f; // steady ripple-creation accumulator
 
     unsigned int m_VAO, m_VBO;
 };

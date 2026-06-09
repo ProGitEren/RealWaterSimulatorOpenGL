@@ -11,9 +11,11 @@ uniform vec3        viewPos;
 uniform samplerCube skybox;
 uniform sampler2D   normalMap;
 uniform sampler2D   disturbanceMap;
-uniform sampler2D   wakeFoamMap;   // world-space foam coverage painted by vehicles
 uniform float       oceanSize;
 uniform int         numRipples;
+uniform float       uRippleLifetime;  // rain ripple ring lifetime (s)
+uniform float       uRingSpeed;       // ring expansion speed (m/s)
+uniform float       uRingStrength;    // ring distortion multiplier
 
 // Ripple data in SSBO — no constant-register limit (replaces uniform array)
 layout(std430, binding = 4) readonly buffer RippleBuffer {
@@ -21,8 +23,19 @@ layout(std430, binding = 4) readonly buffer RippleBuffer {
 } rippleSSBO;
 uniform float       time;
 
-// normalize(vec3(0.5, 1.0, 0.3)) pre-computed — const normalize() is not guaranteed in all GL 4.6 drivers
-const vec3 kSunDir = vec3(0.43193, 0.86386, 0.25932);
+// --- Look / lighting knobs (UI-tunable) ---
+uniform vec3  uDeepColor;
+uniform vec3  uShallowColor;
+uniform float uDepthFalloff;
+uniform float uReflectStrength;
+uniform vec3  uHorizonColor;
+uniform vec3  uScatterColor;
+uniform vec3  uSunColor;
+uniform vec3  uSunDir;       // normalized; from sun azimuth/elevation
+uniform float uSunGlint;
+uniform float uSunGlitter;
+uniform float uExposure;
+uniform float uMidWaveDetail;
 
 // ---- procedural mid-frequency normal detail ----
 vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
@@ -35,7 +48,7 @@ vec3 applyMediumWaveDetail(vec3 baseNormal, vec2 worldXZ) {
     slope += normalize(vec2( 0.18, -0.98)) * cos(dot(worldXZ, normalize(vec2( 0.18, -0.98))) * (6.2831853 /  3.7) + warp * 0.35   + time * 2.05) * 0.022;
     slope += normalize(vec2(-0.96, -0.28)) * cos(dot(worldXZ, normalize(vec2(-0.96, -0.28))) * (6.2831853 / 18.0)                  - time * 0.72) * 0.030;
 
-    return normalize(baseNormal + vec3(-slope.x, 0.0, -slope.y));
+    return normalize(baseNormal + vec3(-slope.x, 0.0, -slope.y) * uMidWaveDetail);
 }
 
 void main() {
@@ -70,9 +83,8 @@ void main() {
     // ---- rain ripple rings ----
     // Each ripple: xy = world XZ centre, z = age [0, kLifetime]
     // 4 rings ALL visible from spawn — fixed radial spacing, expand as one unit.
-    const float kRingSpeed  = 5.0;   // m/s — fast snap outward
     const float kRingWidth  = 0.35;  // metres per ring
-    const float kLifetime   = 6.0;   // seconds — long persistence
+    float       kLifetime   = uRippleLifetime;  // seconds (UI)
     const float kBurst      = 0.1;   // initial radius so all rings visible on frame 1
     const float kGap        = 0.5;   // metres between ring centres — tight cluster
 
@@ -91,14 +103,20 @@ void main() {
         float fade = 1.0 - smoothstep(0.55, 1.0, life);
         vec2  dir  = normalize(FragPos.xz - center);
 
+        // Rings expand fast at first, then ease to a bounded reach, so the ripple
+        // LINGERS near the impact and fades over its lifetime instead of racing
+        // outward forever. uRingSpeed sets how far it spreads; uRippleLifetime
+        // sets how long it stays — the two are independent.
+        const float kExpandTime = 0.7;   // seconds to approach full spread
+        float reach = uRingSpeed * kExpandTime * (1.0 - exp(-age / kExpandTime));
+
         for (int k = 0; k < 4; k++) {
-            // All rings share same speed; k=3 leads by kGap*3 ahead of k=0
-            float r = kBurst + age * kRingSpeed + float(k) * kGap;
+            float r = kBurst + reach + float(k) * kGap;
             if (dist > r + kRingWidth || dist < r - kRingWidth) continue;
 
             float wave = sin((dist - r) * (3.14159265 / kRingWidth));
-            finalNormal.x += dir.x * wave * kAmp[k] * fade;
-            finalNormal.z += dir.y * wave * kAmp[k] * fade;
+            finalNormal.x += dir.x * wave * kAmp[k] * uRingStrength * fade;
+            finalNormal.z += dir.y * wave * kAmp[k] * uRingStrength * fade;
         }
     }
     finalNormal = normalize(finalNormal);
@@ -127,31 +145,27 @@ void main() {
     vec3  R            = reflect(incident, finalNormal);
     // Boost the LDR cubemap into HDR so the exposure tonemap below renders the
     // sky reflection at its true brightness instead of crushing it dark.
-    vec3  envReflect   = texture(skybox, R).rgb * 1.8;
-    const vec3 kHorizon = vec3(0.55, 0.68, 0.82);
+    vec3  envReflect   = texture(skybox, R).rgb * uReflectStrength;
     float belowHorizon = smoothstep(0.0, -0.2, R.y);
-    vec3  reflection   = mix(envReflect, kHorizon, belowHorizon * 0.7);
+    vec3  reflection   = mix(envReflect, uHorizonColor, belowHorizon * 0.7);
 
     // ---- REFRACTION: depth-tinted water body ----
     // Deep troughs = dark navy (long optical path), crests = brighter teal.
-    const vec3 kDeep    = vec3(0.005, 0.035, 0.085);
-    const vec3 kShallow = vec3(0.06, 0.30, 0.40);
-    float depthCue   = clamp((FragPos.y + 2.5) * 0.16, 0.0, 1.0);
-    vec3  bodyColor  = mix(kDeep, kShallow, depthCue);
+    float depthCue   = clamp((FragPos.y + 2.5) * uDepthFalloff, 0.0, 1.0);
+    vec3  bodyColor  = mix(uDeepColor, uShallowColor, depthCue);
 
     // Sun diffuse lifts the lit faces of the body a touch.
-    float diffuse = clamp(dot(finalNormal, kSunDir), 0.0, 1.0);
+    float diffuse = clamp(dot(finalNormal, uSunDir), 0.0, 1.0);
     bodyColor *= (0.5 + 0.5 * diffuse);
 
     // ---- SUBSURFACE SCATTER: the signature "glow through the wave" ----
     // Light transmitted through a crest toward the eye — strongest when the sun
     // is behind the wave and you're looking roughly toward the sun. Keyed on
     // crest height so it appears on the tops of swells, not in flat troughs.
-    const vec3 kScatterColor = vec3(0.08, 0.45, 0.35);
     float crest    = clamp((FragPos.y - 0.1) * 0.4, 0.0, 1.0);
-    float backlight = pow(max(0.0, dot(viewDir, -kSunDir)), 4.0);
-    float sideLight = max(0.0, dot(finalNormal, kSunDir)) * 0.5 + 0.5;
-    vec3  scatter   = kScatterColor * crest * backlight * sideLight * 2.2;
+    float backlight = pow(max(0.0, dot(viewDir, -uSunDir)), 4.0);
+    float sideLight = max(0.0, dot(finalNormal, uSunDir)) * 0.5 + 0.5;
+    vec3  scatter   = uScatterColor * crest * backlight * sideLight * 2.2;
 
     // ---- COMPOSE refraction + scatter (under) with reflection (over) ----
     vec3 underwater = bodyColor + scatter;
@@ -159,41 +173,25 @@ void main() {
     vec3 color = mix(underwater, reflection, reflectStrength);
 
     // ---- SUN SPECULAR: tight glint + broad glitter path ----
-    vec3  halfDir = normalize(kSunDir + viewDir);
+    vec3  halfDir = normalize(uSunDir + viewDir);
     float NdotH   = max(dot(finalNormal, halfDir), 0.0);
     float glint   = pow(NdotH, 1200.0);   // sharp mirror highlight
     float glitter = pow(NdotH, 120.0);    // broad sparkle over the chop
-    vec3  sunCol  = vec3(1.0, 0.96, 0.88);
-    color += sunCol * (glint * 4.0 + glitter * 0.4);
+    color += uSunColor * (glint * uSunGlint + glitter * uSunGlitter);
 
-    // ---- FOAM: whitecaps (FFT Jacobian) + vehicle wake foam (painted map) ----
-    float foamMask = smoothstep(0.05, 0.55, foam);
-    float wakeFoam = 0.0;
-    if (SurfaceMask > 0.5) {
-        // World-anchored map: uv = worldXZ/size + 0.5
-        vec2 foamUV = FragPos.xz / oceanSize + vec2(0.5);
-        float wake = texture(wakeFoamMap, foamUV).r;
-        // Break the trail up with a couple of noise octaves so it looks churned
-        // and dissipating, not a flat solid road.
-        float brk = 0.6
-                  + 0.25 * sin(FragPos.x * 0.6 + FragPos.z * 0.5)
-                  + 0.20 * sin(FragPos.x * 2.3 - FragPos.z * 1.9);
-        wakeFoam = smoothstep(0.12, 0.75, wake * brk);
-    }
+    // ---- FOAM: wave-crest whitecaps (FFT Jacobian) ----
+    float foamMask  = smoothstep(0.05, 0.55, foam);
     float foamLight = 0.7 + 0.3 * diffuse;
     vec3  foamCol   = vec3(0.95, 0.98, 1.02) * foamLight;
-    // whitecaps fairly opaque; wake foam softer so it reads as froth, not paint
     color = mix(color, foamCol, foamMask * 0.85);
-    color = mix(color, foamCol, wakeFoam * 0.7);
 
     // ---- DISTANCE HAZE: soften far water into the sky at the horizon ----
     float dist = length(viewPos - FragPos);
     float haze = smoothstep(500.0, 1700.0, dist);
-    color = mix(color, kHorizon, haze * 0.55);
+    color = mix(color, uHorizonColor, haze * 0.55);
 
     // ---- HDR tonemap (exposure) for crisp contrast instead of a flat clamp ----
-    const float kExposure = 1.4;
-    vec3 finalResult = 1.0 - exp(-color * kExposure);
+    vec3 finalResult = 1.0 - exp(-color * uExposure);
 
     FragColor = vec4(finalResult, 1.0);
 }

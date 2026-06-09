@@ -9,9 +9,7 @@
 #include "ocean/OceanMesh.h"
 #include "water/WaterSimulation.h"
 #include "water/RainSystem.h"
-#include "water/WakeFoam.h"
 #include "water/BoatPhysics.h"
-#include "water/FoamMap.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -155,7 +153,6 @@ int main() {
     shader.setInt("displacementMap", 1);
     shader.setInt("normalMap", 2);
     shader.setInt("disturbanceMap", 3);
-    shader.setInt("wakeFoamMap", 10);   // vehicle wake foam, painted on the surface
 
     debugWireframeShader.use();
     debugWireframeShader.setInt("displacementMap", 1);
@@ -190,21 +187,26 @@ int main() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glBindVertexArray(0);
 
-    std::vector<std::string> faces = {
-        "../assets/textures/skybox/right.png",
-        "../assets/textures/skybox/left.png",
-        "../assets/textures/skybox/top.png",
-        "../assets/textures/skybox/bottom.png",
-        "../assets/textures/skybox/front.png",
-        "../assets/textures/skybox/back.png"
-    };
-    unsigned int cubemapTexture = loadCubemap(faces);
+    // Sky options (selectable in the UI). Each folder holds the 6 cube faces.
+    const char* skyNames[] = { "sky 1", "sky 2", "sky 3", "environment" };
+    const char* skyDirs[]  = { "sky_1", "sky_2", "sky_3", "environment_1" };
+    const int   kNumSkies  = 4;
+    unsigned int skyTextures[kNumSkies];
+    for (int si = 0; si < kNumSkies; ++si) {
+        const std::string base = std::string("../assets/textures/skybox/") + skyDirs[si] + "/";
+        std::vector<std::string> faces = {
+            base + "right.png", base + "left.png", base + "top.png",
+            base + "bottom.png", base + "front.png", base + "back.png"
+        };
+        skyTextures[si] = loadCubemap(faces);
+    }
+    int currentSky = 0;                             // sky 1 == the previous default
+    unsigned int cubemapTexture = skyTextures[currentSky];
 
     // --- OCEAN ---
-    GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 8.0f, 35.0f, 1.6f);
+    GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 15.0f, 35.0f, 2.0f);
     OceanMesh      oceanMesh(kOceanMeshRes, kOceanMeshTile);
     GPUDisturbance disturbance(256u, kOceanMeshRes * kOceanMeshTile);
-    FoamMap        foamMap(1024, kOceanMeshRes * kOceanMeshTile); // 1m/texel — smoother foam edges
 
     // --- OBJECTS ---
     // Poly Haven marble cliff (glTF + PBR textures). The procedural rock
@@ -234,8 +236,10 @@ int main() {
         float scale;
         float yOffset;    // sit at/just above the waterline
         float modelYaw;   // extra yaw so the model's forward axis aligns to heading
-        float wakeWidth;  // hull half-width (m) — foam wake spread
+        float wakeWidth;  // hull half-width (m) -> physics beam (= 2*wakeWidth)
         float hullLength; // bow-to-stern length (m)
+        float turnVel   = 0.0f; // current yaw rate (rad/s) — drives banking
+        float bankAngle = 0.0f; // smoothed lean into turns (rad)
         BoatPhysics phys; // force-based 6-DOF heave/pitch/roll state
     };
 
@@ -267,7 +271,13 @@ int main() {
 
     bool vehiclesMoving = true;   // toggled by P
     bool pKeyWasDown    = false;
-    const float kBayBound = 430.0f; // turn the vehicles back inside this radius
+    // --- Vehicle containment & collision avoidance (keeps boats off the cliffs
+    // and apart from each other; water physics stays in BoatPhysics) ---
+    const float kSoftRadius = 300.0f;  // centre-dist where steer-back reaches full strength
+    const float kHullLimit  = 400.0f;  // hard cap: no hull tip past this (cliff faces ~440)
+    const glm::vec2 kRockXZ = glm::vec2(60.0f, 30.0f); // central rock obstacle
+    const float kRockAvoid  = 70.0f;   // steer away from the rock within this
+    const float kRockHard   = 45.0f;   // hard cap: never enter this radius around the rock
 
     // Coastal cliffs: real Poly Haven scan (coastal_cliff_04 — a ~87m-wide low
     // shoreline cliff strip) arranged as a ring of coastline around the scene,
@@ -301,6 +311,25 @@ int main() {
         { glm::vec3( kCorner, -6.0f,  kCorner), glm::vec3(s, s*1.6f, s), faceIn( kCorner,  kCorner) },
     };
 
+    // Place boats at safe, non-overlapping spawn points inside the play area and
+    // clear of the central rock (the random init positions could land on a rock,
+    // outside the play zone, or on top of each other).
+    for (size_t i = 0; i < vehicles.size(); ++i) {
+        const float ri = vehicles[i].hullLength * 0.5f;
+        for (int tries = 0; tries < 200; ++tries) {
+            glm::vec2 p(frand(-200.0f, 200.0f), frand(-200.0f, 200.0f));
+            if (glm::length(p) > 200.0f) continue;
+            if (glm::length(p - kRockXZ) < kRockHard + ri + 20.0f) continue;
+            bool ok = true;
+            for (size_t j = 0; j < i; ++j) {
+                const float rj = vehicles[j].hullLength * 0.5f;
+                glm::vec2 q(vehicles[j].pos.x, vehicles[j].pos.z);
+                if (glm::length(p - q) < ri + rj + 30.0f) { ok = false; break; }
+            }
+            if (ok) { vehicles[i].pos.x = p.x; vehicles[i].pos.z = p.y; break; }
+        }
+    }
+
     // --- PHYSICS (rain ripples) ---
     WaterSimulation water(kPhysicsGridSize, kPhysicsTileSize, kFixedDt, 8.0f, 0.998f);
     RainSystem      rainSystem(kPhysicsGridSize, kPhysicsTileSize);
@@ -312,6 +341,8 @@ int main() {
     double lastX = 1024.0 / 2.0;
     double lastY = 768.0 / 2.0;
     bool firstMouse = true;
+    bool mouseCaptured = false; // first-person capture: hidden + locked cursor, free-look
+    bool escWasPressed = false;
 
     bool wireframeMode   = false;
     bool tKeyWasPressed  = false;
@@ -331,9 +362,40 @@ int main() {
     float buoyancyStrength = 3.0f; // up-force per metre submerged (higher = floats higher/firmer)
     float buoyancyResponse = 2.0f; // heave damping (higher = settles faster, less bobbing)
     float angularDamp      = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
-    float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
-    float foamIntensity = 1.0f; // how much wake foam vehicles paint into the foam map
-    float foamDecay = 0.9f;     // foam dissipation rate (per second); lower = longer trails
+    float wakeStrength = 0.02f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
+    // --- Navigation realism (gradual turns, gentle wander, banking) ---
+    float boatTurnRate = 0.45f; // max steer-back turn rate (rad/s) — gradual, not a snap
+    float boatWander   = 0.12f; // gentle heading-weave amplitude so paths curve naturally
+    float boatBank     = 0.1f;  // how hard boats lean into turns (visual roll); ~v*omega coordinated-turn
+
+    // --- Rain (the only live UI section; everything above is baked to defaults) ---
+    int   rainSpawnRate    = 50;     // drops/frame (intensity)
+    float rainFallSpeed    = 77.0f;  // m/s
+    float windDir          = 35.0f;  // degrees -> rain drift + streaks + OCEAN wave direction
+    float windStrength     = 0.5f;   // 0..1 -> rain slant (drift velocity)
+    float rainDropSize     = 1.0f;   // streak length + thickness
+    float rainOpacity      = 0.22f;  // streak opacity
+    float rainSplashHeight = 1.0f;   // splash jet height
+    float rippleLifetime   = 3.0f;   // ring lifetime (s)
+    float ringStrength     = 1.0f;   // ring distortion multiplier
+    float ringSpeed        = 5.0f;   // ring expansion speed (m/s)
+
+    // --- Water surface look (standard.frag) ---
+    glm::vec3 deepColor      = glm::vec3(1.0f/255.0f, 9.0f/255.0f, 22.0f/255.0f);
+    glm::vec3 shallowColor   = glm::vec3(15.0f/255.0f, 77.0f/255.0f, 102.0f/255.0f);
+    float     depthFalloff   = 0.020f; // how fast troughs darken into deep colour
+    float     midWaveDetail  = 0.4f;   // procedural surface-ripple amount
+    float     cKeySplash     = 3.0f;   // C-key disturbance amplitude
+    // --- Lighting (standard.frag) ---
+    float     reflectStrength   = 1.8f;   // sky-reflection brightness (HDR boost)
+    glm::vec3 horizonColor      = glm::vec3(0.55f, 0.68f, 0.82f);
+    glm::vec3 scatterColor      = glm::vec3(0.08f, 0.45f, 0.35f);
+    glm::vec3 sunColor          = glm::vec3(1.0f, 0.96f, 0.88f);
+    float     sunAzimuth        = 31.0f;  // degrees
+    float     sunElevation      = 60.0f;  // degrees
+    float     sunGlint          = 4.0f;   // tight specular highlight intensity
+    float     sunGlitter        = 0.4f;   // broad sparkle intensity
+    float     hdrExposure       = 1.4f;
 
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -351,9 +413,34 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGuiIO& io = ImGui::GetIO();
+        // While captured, ImGui ignores the (locked, centred) cursor so the panel
+        // doesn't react; it's interactive again the moment you release with Esc.
+        if (mouseCaptured) io.ConfigFlags |=  ImGuiConfigFlags_NoMouse;
+        else               io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
 
-        if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(win, true);
+        // Left-click on the 3D view (not the panel) captures the mouse for
+        // first-person look: pointer hidden, locked to the window, raw deltas so
+        // you can keep turning past the edge of the screen.
+        if (!mouseCaptured && !io.WantCaptureMouse &&
+            glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            if (glfwRawMouseMotionSupported())
+                glfwSetInputMode(win, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            mouseCaptured = true;
+            firstMouse    = true; // avoid a look jump on capture
+        }
+
+        // Esc: release the cursor if captured, otherwise quit (edge-triggered).
+        const bool escDown = glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (escDown && !escWasPressed) {
+            if (mouseCaptured) {
+                glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                mouseCaptured = false;
+            } else {
+                glfwSetWindowShouldClose(win, true);
+            }
+        }
+        escWasPressed = escDown;
 
         // Wireframe toggle — T or V
         const bool tKeyPressed = glfwGetKey(win, GLFW_KEY_T) == GLFW_PRESS;
@@ -379,8 +466,8 @@ int main() {
         kKeyWasPressed = kKeyPressed;
         lKeyWasPressed = lKeyPressed;
 
-        // Camera movement (suppressed while ImGui is capturing the keyboard)
-        if (!io.WantCaptureKeyboard) {
+        // Camera movement — only while in first-person capture (click to enter)
+        if (mouseCaptured) {
             if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(0, deltaTime);
             if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(1, deltaTime);
             if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(2, deltaTime);
@@ -395,7 +482,7 @@ int main() {
             glm::vec3 flatFront = glm::normalize(glm::vec3(camera.Front.x, 0.0f, camera.Front.z));
             glm::vec2 impactXZ  = glm::vec2(camera.Position.x, camera.Position.z)
                                 + glm::vec2(flatFront.x, flatFront.z) * 40.0f;
-            disturbance.disturb(impactXZ, 3.0f);
+            disturbance.disturb(impactXZ, cKeySplash);
         }
         cKeyWasPressed = cKeyPressed;
 
@@ -439,15 +526,27 @@ int main() {
             frameCount = 0;
         }
 
-        // Mouse look (suppressed while ImGui wants the mouse, e.g. dragging a
-        // slider; lastX/lastY still track so there's no jump when capture ends)
+        // First-person mouse look — only while captured. In GLFW_CURSOR_DISABLED
+        // the cursor is hidden + locked and reports unbounded virtual deltas, so
+        // you can keep turning past the screen edge.
         double xpos, ypos;
         glfwGetCursorPos(win, &xpos, &ypos);
         if (firstMouse) { lastX = xpos; lastY = ypos; firstMouse = false; }
-        if (!io.WantCaptureMouse)
+        if (mouseCaptured)
             camera.ProcessMouseMovement(static_cast<float>(xpos - lastX), static_cast<float>(lastY - ypos));
         lastX = xpos;
         lastY = ypos;
+
+        // Feed the rain system its UI knobs before it steps this frame.
+        rainSystem.spawnRate      = rainSpawnRate;
+        rainSystem.fallSpeed      = rainFallSpeed;
+        rainSystem.dropSize       = rainDropSize;
+        rainSystem.splashHeight   = rainSplashHeight;
+        rainSystem.rippleLifetime = rippleLifetime;
+        {
+            const float wr = glm::radians(windDir);
+            rainSystem.windDrift = glm::vec2(std::cos(wr), std::sin(wr)) * (windStrength * 25.0f);
+        }
 
         // Physics update
         static float accumulator = 0.0f;
@@ -458,20 +557,94 @@ int main() {
             ocean.update(kFixedDt);
             disturbance.update(kFixedDt);
 
-            // Vehicles: advance NAVIGATION (XZ + heading) along the path; if past
-            // the bay bound, steer back. (Heave/pitch/roll come from BoatPhysics,
-            // stepped once per frame after the ocean readback.)
+            // Vehicles: advance NAVIGATION (XZ + heading). Each boat blends three
+            // urges into a desired heading — return toward centre, avoid the other
+            // boats, avoid the central rock — then turns toward it (rate-limited,
+            // sharper near the edge). Hard clamps below guarantee it never phases
+            // through the cliffs/rock or overlaps another boat. (Heave/pitch/roll
+            // come from BoatPhysics, stepped once per frame after the readback.)
             if (vehiclesMoving) {
-                for (Vehicle& v : vehicles) {
+                for (size_t vi = 0; vi < vehicles.size(); ++vi) {
+                    Vehicle& v = vehicles[vi];
                     glm::vec3 dir(std::sin(v.heading), 0.0f, std::cos(v.heading));
                     v.pos += dir * v.speed * kFixedDt;
-                    float distXZ = std::sqrt(v.pos.x * v.pos.x + v.pos.z * v.pos.z);
-                    if (distXZ > kBayBound)
-                        v.heading = std::atan2(-v.pos.x, -v.pos.z);
 
-                    // Ripple wake into the disturbance height field.
-                    disturbance.disturb(glm::vec2(v.pos.x, v.pos.z),
+                    const glm::vec2 p(v.pos.x, v.pos.z);
+                    const float distXZ = glm::length(p);
+                    const float ri = v.hullLength * 0.5f;
+                    const float prevHeading = v.heading;
+
+                    glm::vec2 desired(dir.x, dir.z); // keep going, then bias
+
+                    // (a) Boundary: pull toward centre, ramping in past 0.7*kSoftRadius.
+                    if (distXZ > kSoftRadius * 0.7f && distXZ > 1e-3f) {
+                        float w = glm::clamp((distXZ - kSoftRadius * 0.7f) / (kSoftRadius * 0.3f), 0.0f, 1.0f);
+                        desired += (-p / distXZ) * (w * 2.5f);
+                    }
+                    // (b) Separation from the other boats (size-aware).
+                    for (size_t vj = 0; vj < vehicles.size(); ++vj) {
+                        if (vj == vi) continue;
+                        glm::vec2 d = p - glm::vec2(vehicles[vj].pos.x, vehicles[vj].pos.z);
+                        float dd = glm::length(d);
+                        float keep = ri + vehicles[vj].hullLength * 0.5f + 30.0f;
+                        if (dd > 1e-3f && dd < keep)
+                            desired += (d / dd) * ((1.0f - dd / keep) * 2.2f);
+                    }
+                    // (c) Central rock.
+                    {
+                        glm::vec2 d = p - kRockXZ;
+                        float dd = glm::length(d);
+                        float keep = kRockAvoid + ri;
+                        if (dd > 1e-3f && dd < keep)
+                            desired += (d / dd) * ((1.0f - dd / keep) * 3.0f);
+                    }
+
+                    // Turn toward the desired heading, rate-limited; sharper when
+                    // urgently near the hull limit so we never run out of room.
+                    if (glm::length(desired) > 1e-3f) {
+                        glm::vec2 nd = glm::normalize(desired);
+                        float target = std::atan2(nd.x, nd.y);
+                        float dh = std::atan2(std::sin(target - v.heading), std::cos(target - v.heading));
+                        float urgency = glm::clamp((distXZ + ri - (kHullLimit - 90.0f)) / 90.0f, 0.0f, 1.0f);
+                        float maxTurn = boatTurnRate * (1.0f + 3.0f * urgency) * kFixedDt;
+                        v.heading += glm::clamp(dh, -maxTurn, maxTurn);
+                    }
+                    // Gentle weave only when comfortably clear of everything.
+                    if (distXZ < kSoftRadius * 0.7f)
+                        v.heading += boatWander * std::sin(currentFrame * 0.25f + float(vi) * 2.3f) * kFixedDt;
+
+                    v.turnVel = (v.heading - prevHeading) / kFixedDt; // yaw rate -> banking
+
+                    // Wake churns off the STERN (trailing waterline), not the hull
+                    // centre, so it streams from where the boat meets the water.
+                    glm::vec2 sternXZ = p - glm::vec2(dir.x, dir.z) * (v.hullLength * 0.5f);
+                    disturbance.disturb(sternXZ,
                                         wakeStrength * glm::min(1.0f, v.speed / 12.0f));
+                }
+
+                // HARD safety net — guarantees no boat-boat overlap and no phasing
+                // through the cliffs or the rock, whatever the steering above did.
+                for (size_t i = 0; i < vehicles.size(); ++i)       // push overlapping boats apart
+                    for (size_t j = i + 1; j < vehicles.size(); ++j) {
+                        glm::vec2 d = glm::vec2(vehicles[i].pos.x, vehicles[i].pos.z)
+                                    - glm::vec2(vehicles[j].pos.x, vehicles[j].pos.z);
+                        float dl  = glm::length(d);
+                        float gap = vehicles[i].hullLength * 0.5f + vehicles[j].hullLength * 0.5f + 10.0f;
+                        if (dl < gap && dl > 1e-3f) {
+                            glm::vec2 push = (d / dl) * ((gap - dl) * 0.5f);
+                            vehicles[i].pos.x += push.x; vehicles[i].pos.z += push.y;
+                            vehicles[j].pos.x -= push.x; vehicles[j].pos.z -= push.y;
+                        }
+                    }
+                for (Vehicle& v : vehicles) {                       // then containment has final say
+                    glm::vec2 p(v.pos.x, v.pos.z);
+                    const float ri = v.hullLength * 0.5f;
+                    glm::vec2 rd = p - kRockXZ;                     // never enter the rock
+                    float rl = glm::length(rd), rcap = kRockHard + ri;
+                    if (rl < rcap && rl > 1e-3f) { p = kRockXZ + (rd / rl) * rcap; }
+                    float d = glm::length(p), cap = kHullLimit - ri; // never past the hull limit
+                    if (d > cap && d > 1e-3f) { p *= cap / d; }
+                    v.pos.x = p.x; v.pos.z = p.y;
                 }
             }
             accumulator -= kFixedDt;
@@ -481,7 +654,7 @@ int main() {
         // fixed substeps) for object height sampling — see readbackDisplacement().
         ocean.readbackDisplacement();
 
-        // --- Vehicle buoyancy (force-based 6-DOF) + foam, once per frame ---
+        // --- Vehicle buoyancy (force-based 6-DOF), once per frame ---
         // Step the rigid-body buoyancy using the (now-current) ocean heights.
         // Navigation set v.pos/heading above; physics solves heave/pitch/roll.
         {
@@ -491,78 +664,93 @@ int main() {
                 v.phys.linearDamp  = buoyancyResponse;
                 v.phys.angularDamp = angularDamp;
                 v.phys.step(deltaTime, v.pos, v.heading + v.modelYaw, surfFn);
-
-                // Paint a light foam trail at the stern + a thin bow line into the
-                // foam map. Keep amounts SMALL — the map accumulates ~60x/s, so big
-                // values instantly saturate to a solid white road. Decay clears it.
-                if (vehiclesMoving && v.speed > 0.5f) {
-                    const float ca = std::cos(v.heading), sa = std::sin(v.heading);
-                    const glm::vec2 fwd(sa, ca);
-                    const glm::vec2 c(v.pos.x, v.pos.z);
-                    const float hl  = 0.5f * v.hullLength;
-                    // tiny per-frame deposit, scaled by speed + intensity
-                    const float amt = foamIntensity * glm::min(1.0f, v.speed / 10.0f) * 0.12f;
-                    // stern churn — the main wake source (modest radius)
-                    glm::vec2 stern = c - fwd * hl;
-                    foamMap.splat(stern.x, stern.y, v.wakeWidth * 0.8f, amt);
-                    // faint bow line
-                    glm::vec2 bow = c + fwd * hl;
-                    foamMap.splat(bow.x, bow.y, v.wakeWidth * 0.5f, amt * 0.4f);
-                }
             }
-            foamMap.decay(deltaTime, foamDecay);
-            foamMap.upload();
         }
 
-        // --- ImGui control panel ---
+        // --- ImGui control panel (Rain only; everything else baked to defaults) ---
         {
-            ImGui::Begin("Water Controls");
+            ImGui::Begin("Controls");
             ImGui::Text("%.1f FPS  (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
-            ImGui::Text("ocean readback: %.2f ms", ocean.getLastReadbackMs());
-            ImGui::Separator();
+            ImGui::Spacing();
 
-            if (ImGui::CollapsingHeader("Waves / Spectrum", ImGuiTreeNodeFlags_DefaultOpen)) {
-                // wind speed drives the whole sea state (bigger -> larger swell)
+            if (ImGui::CollapsingHeader("Rain", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SeparatorText("Intensity");
+                ImGui::SliderInt  ("spawn rate", &rainSpawnRate, 0, 50);
+                ImGui::SliderFloat("fall speed", &rainFallSpeed, 20.0f, 140.0f, "%.0f m/s");
+                ImGui::SliderFloat("drop size",  &rainDropSize, 0.3f, 3.0f);
+                ImGui::SliderFloat("opacity",    &rainOpacity, 0.0f, 1.0f);
+
+                ImGui::SeparatorText("Wind (rain + waves)");
+                if (ImGui::SliderFloat("direction", &windDir, 0.0f, 360.0f, "%.0f deg"))
+                    ocean.setWindAngle(windDir);
+                ImGui::SliderFloat("strength", &windStrength, 0.0f, 1.0f);
+
+                ImGui::SeparatorText("Splash & ripples");
+                ImGui::SliderFloat("splash height",   &rainSplashHeight, 0.0f, 3.0f);
+                ImGui::SliderFloat("ripple lifetime", &rippleLifetime, 0.5f, 5.0f, "%.1f s");
+                ImGui::SliderFloat("ring speed",      &ringSpeed, 0.5f, 15.0f, "%.1f m/s");
+                ImGui::SliderFloat("ring strength",   &ringStrength, 0.0f, 3.0f);
+            }
+
+            if (ImGui::CollapsingHeader("Water")) {
+                ImGui::SeparatorText("Waves (FFT)");
                 float wind = ocean.getWindSpeed();
-                if (ImGui::SliderFloat("wind speed (m/s)", &wind, 2.0f, 30.0f)) ocean.setWindSpeed(wind);
-                float windAng = ocean.getWindAngle();
-                if (ImGui::SliderFloat("wind direction (deg)", &windAng, 0.0f, 360.0f)) ocean.setWindAngle(windAng);
-                ImGui::TextDisabled("(wind changes rebuild the spectrum)");
-                ImGui::Spacing();
-                float heightScale = ocean.getHeightScale();
-                if (ImGui::SliderFloat("wave height", &heightScale, 0.0f, 6.0f)) ocean.setHeightScale(heightScale);
+                if (ImGui::SliderFloat("wind speed", &wind, 2.0f, 30.0f, "%.1f m/s")) ocean.setWindSpeed(wind);
+                float wh = ocean.getHeightScale();
+                if (ImGui::SliderFloat("wave height", &wh, 0.0f, 6.0f)) ocean.setHeightScale(wh);
                 float chop = ocean.getChoppiness();
-                if (ImGui::SliderFloat("choppiness",  &chop, 0.0f, 3.0f)) ocean.setChoppiness(chop);
-                float hscale = ocean.getHorizontalScale();
-                if (ImGui::SliderFloat("horiz. displace", &hscale, 0.0f, 1.2f)) ocean.setHorizontalScale(hscale);
-                float timeScale = ocean.getTimeScale();
-                if (ImGui::SliderFloat("time scale (speed)", &timeScale, 0.0f, 4.0f)) ocean.setTimeScale(timeScale);
-                if (ImGui::Button("Calm"))  { ocean.setWindSpeed(5.0f);  ocean.setHeightScale(0.6f); ocean.setChoppiness(0.8f); }
-                ImGui::SameLine();
-                if (ImGui::Button("Choppy")){ ocean.setWindSpeed(12.0f); ocean.setHeightScale(1.4f); ocean.setChoppiness(1.8f); }
-                ImGui::SameLine();
-                if (ImGui::Button("Storm")) { ocean.setWindSpeed(22.0f); ocean.setHeightScale(3.0f); ocean.setChoppiness(2.4f); }
+                if (ImGui::SliderFloat("choppiness", &chop, 0.0f, 3.0f)) ocean.setChoppiness(chop);
+                float hs = ocean.getHorizontalScale();
+                if (ImGui::SliderFloat("horizontal displace", &hs, 0.0f, 1.2f)) ocean.setHorizontalScale(hs);
+                float ts = ocean.getTimeScale();
+                if (ImGui::SliderFloat("time scale", &ts, 0.0f, 4.0f)) ocean.setTimeScale(ts);
+
+                ImGui::SeparatorText("Spectrum (rebuilds on change)");
+                float sm = ocean.getSeaMaturity();
+                if (ImGui::SliderFloat("sea maturity", &sm, 0.84f, 4.0f)) ocean.setSeaMaturity(sm);
+                float amp = ocean.getAmplitude();
+                if (ImGui::SliderFloat("overall amplitude", &amp, 50.0f, 3000.0f, "%.0f")) ocean.setAmplitude(amp);
+
+                ImGui::SeparatorText("Surface");
+                ImGui::SliderFloat("depth tint falloff", &depthFalloff, 0.02f, 0.6f);
+                ImGui::SliderFloat("mid-wave detail", &midWaveDetail, 0.0f, 3.0f);
+
+                ImGui::SeparatorText("Colour");
+                ImGui::ColorEdit3("deep water", &deepColor.x);
+                ImGui::ColorEdit3("shallow / crest", &shallowColor.x);
+
+                ImGui::SeparatorText("Interaction");
+                ImGui::SliderFloat("boat wake strength", &wakeStrength, 0.0f, 0.05f, "%.3f");
+                ImGui::SliderFloat("C-key splash", &cKeySplash, 0.0f, 10.0f);
             }
 
-            if (ImGui::CollapsingHeader("Buoyancy (force-based 6-DOF)", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SliderFloat("float strength", &buoyancyStrength, 1.0f, 8.0f);
-                ImGui::SliderFloat("heave damping",  &buoyancyResponse, 0.3f, 8.0f);
-                ImGui::SliderFloat("tilt damping",   &angularDamp,      0.5f, 8.0f);
-                ImGui::TextDisabled("higher damping = steadier; lower = more bob/rock");
+            if (ImGui::CollapsingHeader("Lighting")) {
+                ImGui::SeparatorText("Sky / environment");
+                if (ImGui::Combo("sky", &currentSky, skyNames, kNumSkies))
+                    cubemapTexture = skyTextures[currentSky];
+
+                ImGui::SeparatorText("Reflection & sky");
+                ImGui::SliderFloat("reflection strength", &reflectStrength, 0.0f, 4.0f);
+                ImGui::ColorEdit3("horizon sky tint", &horizonColor.x);
+
+                ImGui::SeparatorText("Sun");
+                ImGui::SliderFloat("sun azimuth", &sunAzimuth, 0.0f, 360.0f, "%.0f deg");
+                ImGui::SliderFloat("sun elevation", &sunElevation, 0.0f, 90.0f, "%.0f deg");
+                ImGui::ColorEdit3("sun colour", &sunColor.x);
+                ImGui::SliderFloat("sun glint", &sunGlint, 0.0f, 12.0f);
+                ImGui::SliderFloat("sun glitter", &sunGlitter, 0.0f, 2.0f);
+
+                ImGui::SeparatorText("Scatter & tone");
+                ImGui::ColorEdit3("scatter colour", &scatterColor.x);
+                ImGui::SliderFloat("HDR exposure", &hdrExposure, 0.2f, 4.0f);
             }
 
-            if (ImGui::CollapsingHeader("Wake & Foam", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SliderFloat("ripple strength", &wakeStrength, 0.0f, 0.05f);
-                ImGui::SliderFloat("foam intensity",  &foamIntensity, 0.0f, 4.0f);
-                ImGui::SliderFloat("foam fade/sec",   &foamDecay, 0.1f, 2.0f);
-            }
-
-            if (ImGui::CollapsingHeader("Vehicles", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Checkbox("moving (P)", &vehiclesMoving);
+            if (ImGui::CollapsingHeader("Vehicles")) {
+                ImGui::SeparatorText("Speed (m/s)");
                 for (size_t i = 0; i < vehicles.size(); ++i) {
                     ImGui::PushID(static_cast<int>(i));
                     const char* name = (i == 0) ? "jet-ski" : (i == 1) ? "yacht" : "big-ship";
-                    ImGui::SliderFloat(name, &vehicles[i].speed, 0.0f, 30.0f);
+                    ImGui::SliderFloat(name, &vehicles[i].speed, 0.0f, 30.0f, "%.1f");
                     ImGui::PopID();
                 }
             }
@@ -585,8 +773,6 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, ocean.getNormalTexture());
         glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, disturbance.getHeightTexture());
-        glActiveTexture(GL_TEXTURE10);
-        glBindTexture(GL_TEXTURE_2D, foamMap.texture());   // wake foam map -> standard.frag
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
 
@@ -611,6 +797,28 @@ int main() {
             shader.setFloat("floorY", -10000.0f);
             shader.setFloat("time", currentFrame);
             shader.setInt("applyOceanDisplacement", 1);
+            shader.setFloat("uRippleLifetime", rippleLifetime);
+            shader.setFloat("uRingSpeed",      ringSpeed);
+            shader.setFloat("uRingStrength",   ringStrength);
+            // water look + lighting uniforms
+            {
+                float saz = glm::radians(sunAzimuth), sel = glm::radians(sunElevation);
+                glm::vec3 sunDir = glm::normalize(glm::vec3(std::cos(sel) * std::cos(saz),
+                                                            std::sin(sel),
+                                                            std::cos(sel) * std::sin(saz)));
+                shader.setVec3 ("uDeepColor",         deepColor);
+                shader.setVec3 ("uShallowColor",      shallowColor);
+                shader.setFloat("uDepthFalloff",      depthFalloff);
+                shader.setFloat("uMidWaveDetail",     midWaveDetail);
+                shader.setFloat("uReflectStrength",   reflectStrength);
+                shader.setVec3 ("uHorizonColor",      horizonColor);
+                shader.setVec3 ("uScatterColor",      scatterColor);
+                shader.setVec3 ("uSunColor",          sunColor);
+                shader.setVec3 ("uSunDir",            sunDir);
+                shader.setFloat("uSunGlint",          sunGlint);
+                shader.setFloat("uSunGlitter",        sunGlitter);
+                shader.setFloat("uExposure",          hdrExposure);
+            }
             uploadRipples(shader, activeRipples);
             oceanMesh.draw(shader, camera.Position);
 
@@ -638,7 +846,13 @@ int main() {
             for (Vehicle& v : vehicles) {
                 v.model->setPosition(v.phys.position);
                 v.model->setScale(v.scale);
-                v.model->setOrientation(v.phys.orientation);
+                // Bank into turns: smoothly lean about the travel axis, scaled by
+                // yaw rate * speed; eases back to level when straight or stopped.
+                const float bankTarget = vehiclesMoving
+                    ? glm::clamp(-v.turnVel * v.speed * boatBank, -0.35f, 0.35f) : 0.0f;
+                v.bankAngle += (bankTarget - v.bankAngle) * glm::min(1.0f, deltaTime * 3.0f);
+                const glm::vec3 fwdAxis(std::sin(v.heading), 0.0f, std::cos(v.heading));
+                v.model->setOrientation(glm::angleAxis(v.bankAngle, fwdAxis) * v.phys.orientation);
                 v.model->draw(objectShader);
             }
         }
@@ -660,6 +874,10 @@ int main() {
 
 
             // Rain after skybox — blends correctly over sky and water
+            rainShader.use();
+            rainShader.setFloat("uOpacity", rainOpacity);
+            rainShader.setVec3 ("kDropDir",
+                glm::normalize(glm::vec3(rainSystem.windDrift.x, -rainFallSpeed, rainSystem.windDrift.y)));
             rainSystem.render(rainShader, projection, view, camera.Position);
         }
 

@@ -12,8 +12,8 @@ const float PI = 3.14159265359;
 const float GRAVITY = 9.81;
 const float KILOMETERS = 370.0;
 const float CAPILLARY_WAVE_SPEED = 0.23;
-const float OMEGA = 0.85;
-const float SPECTRUM_BOOST = 900.0;
+uniform float OMEGA;               // sea maturity / inverse wave age
+uniform float SPECTRUM_BOOST;      // overall wave amplitude
 
 float square(float value) {
     return value * value;
