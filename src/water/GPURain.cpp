@@ -12,6 +12,8 @@ namespace {
     constexpr float kSpawnRadius  = 100.0f;
     constexpr float kTwoPi        = 6.2831853f;       // 2*pi (matches the rain shaders)
     constexpr float kMaxRippleBurstPerFrame = 20.0f;  // cap rings spawned in one frame
+    // Uniform [0,1). Uses the global C rand() with its default seed (no srand
+    // anywhere in src/), so ripple placement is deterministic across runs.
     float frand01() { return float(rand()) / float(RAND_MAX); }
 }
 
@@ -72,6 +74,8 @@ void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
             m_rippleBudget -= 1.0f;
             float a = frand01() * kTwoPi;
             float r = std::sqrt(frand01()) * kRippleRadius;
+            // Packed for the water shader: .x/.y = world X/Z centre, .z = age (s,
+            // incremented below) — matches standard.frag's RippleBuffer layout.
             glm::vec3 ring(camPos.x + std::cos(a) * r, camPos.z + std::sin(a) * r, 0.0f);
             if (m_ripples.size() >= kMaxStoredRipples) m_ripples.pop_front();
             m_ripples.push_back(ring);

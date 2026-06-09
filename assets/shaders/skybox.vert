@@ -9,5 +9,7 @@ uniform mat4 view;
 void main() {
     TexCoords = aPos;
     vec4 pos = projection * view * vec4(aPos, 1.0);
-    gl_Position = pos.xyww; 
+    // .xyww forces post-perspective-divide depth to 1.0 (the far plane) so the
+    // skybox renders behind all geometry; pairs with glDepthFunc(GL_LEQUAL).
+    gl_Position = pos.xyww;
 }

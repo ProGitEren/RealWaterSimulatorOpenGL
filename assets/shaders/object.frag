@@ -18,7 +18,9 @@ uniform int hasAlbedo;
 uniform int hasNormalMap;
 uniform int hasAO;
 
-// Same sun as the water shader, for consistent lighting.
+// FIXED sun direction for object lighting. Matches the water shader's sun only
+// at its DEFAULT azimuth/elevation sliders — moving the sun re-lights the water
+// but NOT these objects (kSunDir is not driven by the uSunDir uniform).
 const vec3 kSunDir = vec3(0.43193, 0.86386, 0.25932);
 
 // Perturb the geometric normal by a tangent-space normal map WITHOUT needing

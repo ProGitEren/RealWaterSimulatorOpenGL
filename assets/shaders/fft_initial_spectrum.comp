@@ -75,10 +75,8 @@ void main() {
 
     float spectrum = (1.0 / (2.0 * PI)) * pow(waveNumber, -4.0) * (bl + bh) * (1.0 + delta * (2.0 * cosPhi * cosPhi - 1.0));
     spectrum = max(spectrum, 0.0);
-    // NOTE: the reference (achalpandeyy/OceanFFT) applies NO high-frequency
-    // cutoff — at resolution 512 the grid can carry the short capillary waves
-    // without aliasing, and those short waves ARE the crisp detail. Removing
-    // the old exp(-shortWave^4) cutoff is what restores the fine surface chop.
+    // No high-frequency cutoff: at resolution 512 the grid carries the short
+    // capillary waves without aliasing, and those short waves are the crisp detail.
 
     vec2 gaussian = texelFetch(gaussianNoiseTexture, coord, 0).xy;
     float amplitude = sqrt(spectrum * 0.5) * dk * SPECTRUM_BOOST;

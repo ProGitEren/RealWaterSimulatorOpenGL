@@ -5,19 +5,19 @@
 #include <glm/gtc/quaternion.hpp>
 #include <functional>
 
-// Force-based 6-DOF rigid-body buoyancy for a floating hull on the FFT ocean.
+// Spring-damper 6-DOF buoyancy for a floating hull on the FFT ocean.
 //
-// The hull is approximated by a set of sample "facets" laid out in the boat's
-// local frame (a flat grid spanning length x beam). Each step:
-//   - transform each facet to world space,
-//   - look up the ocean surface height under it,
-//   - if submerged, apply an Archimedes buoyancy force (up, ~ submerged depth)
-//     plus vertical + horizontal drag,
-//   - sum forces -> linear acceleration; sum torques (r x F) -> angular accel,
-//   - integrate linear & angular velocity, then position & orientation.
+// The hull is approximated by a grid of sample "facets" in the boat's local
+// frame (length x beam). Each step:
+//   - transform each facet to world space and look up the ocean surface height,
+//   - average those heights and fit fore/aft + port/starboard height slopes,
+//   - drive HEAVE with a critically-damped spring toward the average height,
+//   - drive PITCH/ROLL with critically-damped springs toward the fitted slopes.
+// A spring toward the surface is far more stable than summing raw Archimedes
+// forces (which sink the hull unless perfectly tuned).
 //
-// Heave/pitch/roll emerge naturally; the caller still drives yaw + forward
-// motion (surge) for scripted navigation, and may add wave-slope push if wanted.
+// Heave/pitch/roll emerge from the waves; the caller still drives yaw + forward
+// motion (surge) for scripted navigation.
 struct BoatPhysics {
     // --- state ---
     glm::vec3 position{0.0f};       // hull origin (waterline centre) world pos
