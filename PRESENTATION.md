@@ -100,20 +100,22 @@ initial spectrum  →  phase (time)  →  current spectrum (+choppy dx,dz)
 
 ---
 
-## Slide 8 — Rain
+## Slide 8 — Rain (fully GPU)
 
-- **CPU particle system**, spawned **around the camera** (100 m disc — never the whole ocean)
-- Drops fall + slant with **wind**, become bright **streaks**
-- On impact → **splash jet** (water column) + **ripple ring** on the surface
-- Ripple rings drawn by the **water shader** (SSBO of centres+ages)
+- **GPU particle system**: every drop lives in an **SSBO**, advanced by a **compute shader**
+  (`rain_update.comp`) — **no CPU per-drop loop, no per-frame vertex upload**
+- **Attributeless instanced draw**: vertex shader reads the SSBO → streaks + splash columns,
+  **1 compute dispatch + 2 draw calls** total
+- Drops fall + slant with **wind**; on impact → **splash column** + **ripple ring**
+- Scales to **120 K drops** at ~zero CPU cost · spawned in a 100 m disc around the camera
 
-**Optimizations:**
+**Optimizations (no visual change):**
 - **Per-pixel ripple early-out** — reject far ripples with a cheap distance test *before* the heavy
-  math (the fix that unstuck weaker / Windows GPUs; **no visual change**)
-- Fixed **512-ripple budget** → GPU cost constant even at 500 drops/frame
-- One VBO + two draw calls; camera-local only
+  math (unstuck weaker / Windows GPUs)
+- Rain updates **once/frame** (out of the substep loop) · fixed **512-ripple budget** → cost
+  independent of intensity
 
-**Look at:** `src/water/RainSystem.cpp` + `assets/shaders/standard.frag` (ripple loop)
+**Look at:** `src/water/GPURain.cpp` + `assets/shaders/rain_update.comp`, `rain_gpu.*`, `rain_splash.*`
 
 ---
 
@@ -220,10 +222,11 @@ PBR ocean, composited in **HDR** then tonemapped:
 - Big wins:
   - **Stockham FFT** → enables true 512 (no shared-mem cap)
   - **Async PBO readback** of wave heights → no GPU stall for buoyancy
+  - **Fully GPU rain** → compute update + instanced draws; no CPU per-drop work / no vertex upload
   - **Per-pixel ripple early-out** → was ~1.2 B iterations/frame; now only nearby ripples
     (fixed the "stuck" on weaker / Windows GPUs, no visual change)
   - **Rain budget** (fixed 512-ripple SSBO) → cost independent of intensity
-  - **Camera-local rain**, **skybox depth-trick**, **batched rain draws**
+  - **Camera-local rain**, **skybox depth-trick**
 
 ---
 

@@ -142,6 +142,7 @@ int main() {
     Shader shader("../assets/shaders/standard.vert", "../assets/shaders/standard.frag");
     Shader debugWireframeShader("../assets/shaders/standard.vert", "../assets/shaders/debug_wireframe.frag");
     Shader rainShader("../assets/shaders/rain_gpu.vert", "../assets/shaders/rain_gpu.frag");
+    Shader rainSplashShader("../assets/shaders/rain_splash.vert", "../assets/shaders/rain_splash.frag");
     Shader skyboxShader("../assets/shaders/skybox.vert", "../assets/shaders/skybox.frag");
     Shader objectShader("../assets/shaders/object.vert", "../assets/shaders/object.frag");
     objectShader.use();
@@ -543,10 +544,6 @@ int main() {
         static float accumulator = 0.0f;
         accumulator = std::min(accumulator + deltaTime, kMaxAccumulatedTime);
         while (accumulator >= kFixedDt) {
-            // GPU rain: drops advance in a compute shader; ripple rings (cheap,
-            // throttled) spawn on the CPU to feed the water shader.
-            rainSystem.update(kFixedDt, camera.Position, rainWindDrift,
-                              rainFallSpeed, rainSpawnRate, rippleLifetime);
             ocean.update(kFixedDt);
             disturbance.update(kFixedDt);
 
@@ -642,6 +639,12 @@ int main() {
             }
             accumulator -= kFixedDt;
         }
+
+        // GPU rain: advance ONCE per frame (not per substep) — drops are visual,
+        // so one compute dispatch over the whole frame's dt is identical-looking
+        // but avoids redundant dispatches on slow frames.
+        rainSystem.update(deltaTime, camera.Position, rainWindDrift,
+                          rainFallSpeed, rainSpawnRate, rippleLifetime);
 
         // Read the ocean displacement back to the CPU ONCE per frame (after all
         // fixed substeps) for object height sampling — see readbackDisplacement().
@@ -866,9 +869,10 @@ int main() {
             glDepthMask(GL_TRUE);
 
 
-            // Rain after skybox — GPU instanced draw (reads the drop SSBO).
-            rainSystem.render(rainShader, projection, view,
-                              rainWindDrift, rainFallSpeed, rainDropSize, rainOpacity);
+            // Rain after skybox — GPU instanced draw (streaks + splashes, SSBO).
+            rainSystem.render(rainShader, rainSplashShader, projection, view,
+                              rainWindDrift, rainFallSpeed, rainDropSize,
+                              rainOpacity, rainSplashHeight);
         }
 
         // Recording

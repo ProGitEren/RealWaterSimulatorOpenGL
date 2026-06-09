@@ -24,9 +24,12 @@ public:
     void update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
                 float fallSpeed, int spawnRate, float rippleLifetime);
 
-    // Attributeless instanced draw of all active drop streaks (one draw call).
-    void render(Shader& shader, const glm::mat4& proj, const glm::mat4& view,
-                glm::vec2 windDrift, float fallSpeed, float dropSize, float opacity);
+    // Attributeless instanced draw of all active drop streaks + splash columns
+    // (two draw calls, both reading the same SSBO — no CPU vertex work).
+    void render(Shader& streakShader, Shader& splashShader,
+                const glm::mat4& proj, const glm::mat4& view,
+                glm::vec2 windDrift, float fallSpeed, float dropSize,
+                float opacity, float splashHeight);
 
     const std::deque<glm::vec3>& getActiveRipples() const { return m_ripples; }
 

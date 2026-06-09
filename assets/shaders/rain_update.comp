@@ -4,7 +4,9 @@ layout(local_size_x = 256) in;
 // GPU rain: every drop lives in this SSBO and is advanced entirely on the GPU.
 // No CPU per-drop loop, no per-frame vertex upload. struct = 2 vec4:
 //   pos.xyz = world position, pos.w  = fall speed (m/s)
-//   vel.xyz = unused/seed,    vel.w  = phase/seed for variation
+//   vel.x   = splash timer (s remaining; >0 = a splash is playing at the impact)
+//   vel.yz  = the impact XZ (where the splash plays; the drop itself has respawned)
+//   vel.w   = stable per-drop seed
 struct Drop { vec4 pos; vec4 vel; };
 
 layout(std430, binding = 0) buffer DropBuffer { Drop drops[]; };
@@ -43,15 +45,29 @@ void main() {
     // First-time init (y==0 sentinel) -> place it.
     if (d.pos.w < 1e-4) respawn(d, id);
 
+    // Count down any active splash from the previous impact.
+    d.vel.x = max(d.vel.x - uDt, 0.0);
+
     // Fall + wind drift.
     d.pos.y -= d.pos.w * uDt;
     d.pos.x += uWindDrift.x * uDt;
     d.pos.z += uWindDrift.y * uDt;
 
-    // Hit the water (or drifted out of the disc) -> recycle to the top.
+    // Hit the water -> kick a splash at the impact, then recycle to the top.
+    // Drifted out of the disc -> just recycle (no splash).
+    const float kSplashLife = 0.45;
     float dx = d.pos.x - uCamPos.x, dz = d.pos.z - uCamPos.z;
-    if (d.pos.y <= 0.5 || (dx*dx + dz*dz) > uSpawnRadius * uSpawnRadius * 1.2)
+    bool outside = (dx*dx + dz*dz) > uSpawnRadius * uSpawnRadius * 1.2;
+    if (d.pos.y <= 0.5 && !outside) {
+        // Remember WHERE it hit (splash plays here even after the drop respawns).
+        float ix = d.pos.x, iz = d.pos.z;
         respawn(d, id);
+        d.vel.x = kSplashLife;
+        d.vel.y = ix;
+        d.vel.z = iz;
+    } else if (d.pos.y <= 0.5 || outside) {
+        respawn(d, id);
+    }
 
     drops[id] = d;
 }

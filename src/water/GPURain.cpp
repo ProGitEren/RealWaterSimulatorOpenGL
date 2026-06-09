@@ -56,7 +56,9 @@ void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
         m_updateShader.setFloat("uTime", m_time);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
         glDispatchCompute((m_activeCount + 255u) / 256u, 1, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+        // We read the drop SSBO in the vertex shader as storage (not as vertex
+        // attributes), so only the shader-storage barrier is needed.
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
     // --- CPU: throttled ripple-ring spawner (cheap, feeds the water shader) ---
@@ -81,26 +83,36 @@ void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
     }
 }
 
-void GPURain::render(Shader& shader, const glm::mat4& proj, const glm::mat4& view,
-                     glm::vec2 windDrift, float fallSpeed, float dropSize, float opacity) {
+void GPURain::render(Shader& streakShader, Shader& splashShader,
+                     const glm::mat4& proj, const glm::mat4& view,
+                     glm::vec2 windDrift, float fallSpeed, float dropSize,
+                     float opacity, float splashHeight) {
     if (m_activeCount == 0) return;
 
-    shader.use();
-    shader.setMat4 ("projection", proj);
-    shader.setMat4 ("view", view);
-    shader.setVec2 ("uWindDrift", windDrift);
-    shader.setFloat("uFallSpeed", fallSpeed);
-    shader.setFloat("uDropSize", dropSize);
-    shader.setFloat("uOpacity", opacity);
-
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
-    glLineWidth(std::clamp(dropSize * 1.5f, 1.0f, 6.0f));
+    glBindVertexArray(m_vao);
     glEnable(GL_LINE_SMOOTH);
 
-    glBindVertexArray(m_vao);
-    // 2 vertices per drop, no vertex buffer — the vertex shader reads the SSBO.
+    // --- Pass 1: rain streaks (thin, faint) ---
+    streakShader.use();
+    streakShader.setMat4 ("projection", proj);
+    streakShader.setMat4 ("view", view);
+    streakShader.setVec2 ("uWindDrift", windDrift);
+    streakShader.setFloat("uFallSpeed", fallSpeed);
+    streakShader.setFloat("uDropSize", dropSize);
+    streakShader.setFloat("uOpacity", opacity);
+    glLineWidth(std::clamp(dropSize * 1.5f, 1.0f, 6.0f));
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(m_activeCount) * 2);
-    glBindVertexArray(0);
 
+    // --- Pass 2: splash columns (brighter, thicker) — same SSBO, no CPU work.
+    // Inactive splashes emit a degenerate off-screen line, so this is cheap.
+    splashShader.use();
+    splashShader.setMat4 ("projection", proj);
+    splashShader.setMat4 ("view", view);
+    splashShader.setFloat("uSplashHeight", splashHeight);
+    glLineWidth(2.5f);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(m_activeCount) * 2);
+
+    glBindVertexArray(0);
     glDisable(GL_LINE_SMOOTH);
 }

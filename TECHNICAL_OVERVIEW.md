@@ -32,7 +32,7 @@ RealWaterSimulatorOpenGL/
 │   │   ├── OceanMesh.{h,cpp} ............ the 1024×1024 grid the ocean is drawn on
 │   │   └── GPUDisturbance.{h,cpp} ....... interactive wave ripples (C-key + boat wakes), GPU wave equation
 │   └── water/
-│       ├── RainSystem.{h,cpp} ........... rain drops + splashes + ripple rings (CPU particles)
+│       ├── GPURain.{h,cpp} ............. GPU rain: drops in an SSBO, compute update, instanced draw
 │       └── BoatPhysics.{h,cpp} .......... 6-DOF buoyancy (heave/pitch/roll from wave sampling)
 ├── assets/
 │   ├── shaders/ ........................ all GLSL (see per-section lists below)
@@ -44,12 +44,14 @@ RealWaterSimulatorOpenGL/
 
 ### The render loop, one frame (in `main.cpp`)
 1. **Input** — keyboard/mouse; left-click = first-person capture; ImGui panel.
-2. **Fixed-timestep physics** (`kFixedDt = 1/60`, accumulator pattern, `main.cpp:552`):
-   `water.update()` → `rainSystem.update()` → `ocean.update()` (full GPU FFT) →
-   `disturbance.update()` → vehicle navigation/steering + stern wake injection.
-3. **`ocean.readbackDisplacement()`** — copy the GPU wave heights to the CPU (once/frame).
-4. **`BoatPhysics::step()`** per vehicle — solve heave/pitch/roll from the sampled heights.
-5. **Render:** ocean → solid objects (rock, cliffs, vehicles) → skybox → rain → ImGui.
+2. **Fixed-timestep physics** (`kFixedDt = 1/60`, accumulator pattern): per substep
+   `ocean.update()` (full GPU FFT) → `disturbance.update()` → vehicle navigation/steering + stern
+   wake injection.
+3. **`rainSystem.update()`** — once per frame (outside the substep loop): one GPU compute dispatch
+   advances all drops + spawns throttled ripple rings.
+4. **`ocean.readbackDisplacement()`** — copy the GPU wave heights to the CPU (once/frame).
+5. **`BoatPhysics::step()`** per vehicle — solve heave/pitch/roll from the sampled heights.
+6. **Render:** ocean → solid objects (rock, cliffs, vehicles) → skybox → rain (streaks+splashes) → ImGui.
 
 ### Texture-unit map (how data reaches the shaders)
 | Unit | Bound texture | Used by |
@@ -152,66 +154,73 @@ not beside it.
 
 ---
 
-## 2. RAIN
+## 2. RAIN (fully GPU-driven)
 
-**What it is:** a **CPU particle system** of falling rain streaks, splash "jets" where drops hit
-the water, and expanding **ripple rings** drawn into the water surface.
+**What it is:** a **GPU particle system** — every raindrop lives in a GPU buffer (SSBO) and is
+advanced by a **compute shader**; drops and splash columns are drawn **attributeless / instanced**
+(the vertex shaders read the SSBO directly), so there is **no CPU per-drop loop and no per-frame
+vertex upload**. Expanding **ripple rings** are still drawn into the water surface.
 
 ### Where to look
-- **C++:** `src/water/RainSystem.{h,cpp}`.
-- **Shaders:** `assets/shaders/rain.vert`, `rain.frag` (the drops + splash columns).
+- **C++:** `src/water/GPURain.{h,cpp}` (owns the drop SSBO, dispatches the compute update, does the
+  instanced draws).
+- **Shaders:** `assets/shaders/rain_update.comp` (drop physics on the GPU),
+  `rain_gpu.vert/frag` (streaks), `rain_splash.vert/frag` (splash columns).
 - The **ripple rings** are drawn by the **water** shader `standard.frag` (lines ~83–122), fed by an
   SSBO of ripple centres+ages packed in `main.cpp::uploadRipples`.
 
 ### How it works
-1. **Spawn (`RainSystem::update`).** Each frame spawns `spawnRate` drops (default **50/frame**) in
-   a 100 m radius **around the camera** (so rain is always where you're looking). Each drop has a
-   random fall speed and a small size.
-2. **Fall.** Drops fall at `fallSpeed` and drift sideways by `windDrift` (from the wind UI) — so
-   rain slants with the wind. Each drop becomes a **2-vertex streak** (bright tip → faded tail)
-   aligned to its velocity.
-3. **Impact (y ≤ 0.5).** When a drop reaches the surface, near the camera, it:
-   - spawns a **splash jet** (a parabolic rising/falling bright water column), and
-   - registers a **ripple ring** at that XZ.
-4. **Ripple rings.** Stored in a `std::deque`, aged each frame, and uploaded to the GPU as an
-   **SSBO** (binding 4). `standard.frag` reads them and perturbs the water normal in **4 concentric
-   rings** that expand (`uRingSpeed`) and fade over `uRippleLifetime` — so each raindrop leaves a
-   spreading ring on the water.
+1. **Drop buffer.** A single SSBO holds up to **120,000 drops** (`2×vec4` each:
+   `pos.xyz`+fall speed, and a splash timer + impact XZ + seed). Allocated once.
+2. **GPU update (`rain_update.comp`).** Each frame, one compute dispatch advances **every** drop:
+   fall by its speed, drift sideways by the wind, and on hitting the water (`y ≤ 0.5`) or drifting
+   out of the 100 m disc → **respawn at the top** around the camera (random angle/radius via a GPU
+   hash). On a water hit it also **records the impact XZ and starts a splash timer** in its own slot.
+   No CPU loop touches the drops.
+3. **Streak draw (`rain_gpu.vert`).** Attributeless: we draw `count × 2` vertices as `GL_LINES`;
+   the vertex shader reads each drop from the SSBO and builds its streak (bright tip → faded tail,
+   slanted along velocity). **One draw call, zero CPU vertex work.**
+4. **Splash draw (`rain_splash.vert`).** A second instanced draw over the **same** SSBO renders a
+   short **parabolic water column** at each drop whose splash timer is active (using the stored
+   impact XZ). Inactive splashes emit a degenerate off-screen line (free).
+5. **Ripple rings.** The only CPU-side piece: a **throttled spawner** in `GPURain::update` drops
+   ~`480 / lifetime` rings per second around the camera into a `std::deque`, aged each frame and
+   uploaded to the ripple SSBO (binding 4). `standard.frag` reads them and perturbs the water normal
+   in **4 concentric rings** that expand (`uRingSpeed`) and fade over `uRippleLifetime`.
 
-### Performance optimization (important for the presentation)
-- **Per-pixel ripple early-out (the big one — `standard.frag`).** The rain ripple **rings are drawn
-  by the water fragment shader**, which loops over up to **512 ripples × 4 rings per fragment**. With
-  the ocean filling the screen (~600 K fragments) that was up to **~1.2 billion iterations/frame** —
-  fine on a high-end GPU but it makes weaker (e.g. Windows laptop / integrated) GPUs stutter. The
-  optimization: each ripple has a tiny footprint, so we **reject far ripples with a cheap
-  squared-distance test *before* the `normalize()`/`sin()` and the inner ring loop**, reuse that
-  `sqrt` for the direction (no second `normalize`), and skip ripple work entirely for fragments
-  >350 m from the camera. This is **mathematically identical** (skipped ripples contribute exactly
-  0 — no visual change) but cuts the cost from "always 512 ripples" to "only the few actually
-  nearby." **This is what unstuck the Windows build.**
-- **Ripple-budget throttling (`RainSystem.cpp:43`).** The ripple SSBO holds only **512** entries.
-  Every impact would spawn ~1800 ripples/sec and the buffer would evict them in ~0.3 s — so the
-  lifetime slider would do nothing. Instead a **steady budget** creates ripples at a rate
-  `kRippleTarget(480) / lifetime`, so the field stays ≈ full at any setting and the lifetime slider
-  purely controls survival time. **This decouples GPU cost from rain intensity** — even at the max
-  500 drops/frame, the ripple count (and therefore the shader cost) stays capped at 512.
-- **One dynamic VBO, two draw calls.** All streaks + all splash columns are packed into a single
-  vertex buffer; `render()` draws streaks (thin, faint) and splash jets (thicker, brighter) as two
-  `GL_LINES` ranges with one buffer upload. No per-particle draw calls.
-- **Camera-local spawning.** Rain only exists in a 100 m disc around the camera — never simulates
-  the whole 1024 m ocean.
+### Performance — why it's fast (important for the presentation)
+- **Pure-GPU drops.** All drop motion is a single **compute dispatch**; rendering is **2 instanced
+  draw calls** (streaks + splashes) reading the SSBO. **No CPU per-drop loop, no per-frame vertex
+  buffer rebuild/upload.** Scales to tens of thousands of drops at ~zero CPU cost (the old CPU
+  system rebuilt + re-uploaded a vertex array every frame and would choke the CPU at those counts).
+- **Rain updates once per frame**, *outside* the fixed-timestep substep loop — drops are visual, so
+  one dispatch over the whole frame's `dt` looks identical but avoids redundant dispatches on slow
+  frames.
+- **Per-pixel ripple early-out (`standard.frag`).** The ripple **rings are drawn by the water
+  fragment shader**, looping over up to **512 ripples × 4 rings per fragment** (~1.2 B iterations/
+  frame with the ocean full-screen). We **reject far ripples with a cheap squared-distance test
+  *before* the `normalize()`/`sin()` and the inner ring loop**, reuse that `sqrt` for the direction,
+  and skip ripples for fragments >350 m away. **Mathematically identical** (no visual change) — this
+  is what unstuck weaker / Windows GPUs.
+- **Ripple-budget throttling.** The ripple SSBO holds only **512** entries; a steady budget creates
+  rings at `kRippleTarget(480) / lifetime`, so the field stays ≈ full at any setting and **cost is
+  decoupled from rain intensity** — even at max spawn rate the ripple count (and shader cost) stays
+  capped at 512.
+- **Camera-local.** Drops only exist in a 100 m disc around the camera — never the whole 1024 m ocean.
 
 ### Key numbers / parameters
 | Parameter | Default | Range | Effect |
 |---|---|---|---|
-| spawn rate | 50 /frame | 0–500 | rain intensity (drops spawned per frame) |
+| spawn rate | 50 | 0–500 | rain intensity (× ~24 = live drop count) |
 | fall speed | 77 m/s | 20–140 | drop speed + streak length |
 | drop size | 1.0 | 0.3–3 | streak length + thickness |
 | opacity | 0.22 | 0–1 | streak transparency |
-| splash height | 1.0 | 0–3 | splash-jet column height |
+| splash height | 1.0 | 0–3 | splash-column height |
 | ripple lifetime | 3 s | 0.5–5 | how long each ring lives |
 | ring speed | 5 m/s | 0.5–15 | ring expansion rate |
-| ripple SSBO cap | **512** | — | hard buffer budget (binding 4) |
+| drop SSBO capacity | **120,000** | — | max drops the GPU buffer holds |
+| ripple SSBO cap | **512** | — | hard ripple budget (binding 4) |
+| per frame | **1 compute dispatch + 2 draw calls** | — | total rain GPU work |
 
 ---
 
@@ -467,14 +476,15 @@ next = (2·current − previous + waveC · laplacian) · damping
 - **~112 FPS** on an RTX 3090 at defaults (1024×768 window).
 - **GPU per frame:** the FFT (`~18 IFFT dispatches` + spectrum/phase/displacement/normal) on 512²
   textures; the 256² disturbance step; rendering a 1024² ocean grid (~2 M triangles) + the models.
-- **CPU per frame:** rain particles (camera-local), boat steering + 6-DOF buoyancy (15 facets × 3
+- **CPU per frame:** only the throttled rain ripple-ring spawner (~480/s), boat steering + 6-DOF
+  buoyancy (15 facets × 3
   boats), and **one async PBO readback** of the 512² displacement (the readback is double-buffered
   to avoid a GPU stall — the single biggest perf decision on the buoyancy side).
 - **Key optimizations:** Stockham FFT (no shared-mem cap, enables 512); async PBO height readback
   (no stall); **per-pixel ripple early-out** (squared-distance reject before the heavy math — the
-  fix that unstuck weaker/Windows GPUs); rain ripple-budget throttling (fixed 512-entry SSBO);
-  camera-local rain; cubemap
-  skybox depth-trick (no overdraw); single VBO / two draw calls for all rain.
+  fix that unstuck weaker/Windows GPUs); **fully GPU rain** (compute update + instanced draws, no
+  CPU per-drop work / no vertex upload); rain ripple-budget throttling (fixed 512-entry SSBO);
+  camera-local rain; cubemap skybox depth-trick (no overdraw).
 
 ---
 
@@ -485,7 +495,7 @@ next = (2·current − previous + waveC · laplacian) · damping
 | The whole pipeline / render loop | `src/main.cpp` |
 | FFT ocean simulation | `src/ocean/GPUFFTOcean.cpp` + `assets/shaders/fft_*.comp` |
 | How waves are drawn / lit | `assets/shaders/standard.vert` + `standard.frag` |
-| Rain | `src/water/RainSystem.cpp` + `assets/shaders/rain.*` |
+| Rain (GPU) | `src/water/GPURain.cpp` + `assets/shaders/rain_update.comp`, `rain_gpu.*`, `rain_splash.*` |
 | Sky | `main.cpp` skybox block + `assets/shaders/skybox.*` |
 | Boats moving | `src/main.cpp` vehicle navigation block (~line 566) |
 | Boats floating | `src/water/BoatPhysics.cpp` |
