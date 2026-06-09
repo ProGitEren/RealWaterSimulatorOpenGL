@@ -10,6 +10,13 @@ public:
     Window(int width, int height, const std::string& title);
     ~Window();
 
+    // Owns a raw GLFWwindow* (the dtor destroys it + terminates GLFW), so the
+    // window is non-copyable and non-movable; it is constructed exactly once.
+    Window(const Window&)            = delete;
+    Window& operator=(const Window&) = delete;
+    Window(Window&&)                 = delete;
+    Window& operator=(Window&&)      = delete;
+
     bool shouldClose() const;
     void swapBuffers() const;
     void pollEvents() const;

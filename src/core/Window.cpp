@@ -1,8 +1,8 @@
 #include "Window.h"
 #include <iostream>
 
-Window::Window(int width, int height, const std::string& title) 
-    : m_width(width), m_height(height), m_window(nullptr) {
+Window::Window(int width, int height, const std::string& title)
+    : m_window(nullptr), m_width(width), m_height(height) {
     
     // 1. Initialize GLFW
     if (!glfwInit()) {

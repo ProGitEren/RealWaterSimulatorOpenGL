@@ -3,7 +3,6 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
-#include <vector>
 #include <functional>
 
 // Force-based 6-DOF rigid-body buoyancy for a floating hull on the FFT ocean.

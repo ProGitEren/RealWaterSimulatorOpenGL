@@ -1,6 +1,8 @@
 #include "Camera.h"
 
-Camera::Camera(glm::vec3 position) 
+#include <cmath>   // cos/sin in updateCameraVectors (was only transitively visible)
+
+Camera::Camera(glm::vec3 position)
     : Front(glm::vec3(0.0f, -0.5f, -1.0f)), MovementSpeed(70.0f), MouseSensitivity(0.1f) {
     Position = position;
     WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
