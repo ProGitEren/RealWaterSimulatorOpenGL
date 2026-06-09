@@ -675,7 +675,7 @@ int main() {
 
             if (ImGui::CollapsingHeader("Rain", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SeparatorText("Intensity");
-                ImGui::SliderInt  ("spawn rate", &rainSpawnRate, 0, 50);
+                ImGui::SliderInt  ("spawn rate", &rainSpawnRate, 0, 500);
                 ImGui::SliderFloat("fall speed", &rainFallSpeed, 20.0f, 140.0f, "%.0f m/s");
                 ImGui::SliderFloat("drop size",  &rainDropSize, 0.3f, 3.0f);
                 ImGui::SliderFloat("opacity",    &rainOpacity, 0.0f, 1.0f);

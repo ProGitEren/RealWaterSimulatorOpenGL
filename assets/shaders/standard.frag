@@ -91,32 +91,49 @@ void main() {
     // k=3 outermost (leads), k=0 innermost; outer rings slightly stronger
     const float kAmp[4] = float[4](0.015, 0.030, 0.050, 0.070);
 
-    for (int i = 0; i < numRipples; i++) {
-        vec2  center = rippleSSBO.ripples[i].xy;
-        float age    = rippleSSBO.ripples[i].z;
-        float dist   = length(FragPos.xz - center);
-        if (dist < 0.001) continue;
+    // PERF: a single ripple only ever reaches ~kBurst + maxReach + 3*kGap + width
+    // metres. The vast majority of the up-to-512 ripples are nowhere near any
+    // given fragment, so we reject them with a cheap squared-distance test BEFORE
+    // the expensive normalize()/sin() and the inner ring loop. This is mathematically
+    // identical (skipped ripples contribute exactly 0) but turns the per-pixel cost
+    // from O(512*4) into "only the handful of nearby ripples" — the difference
+    // between smooth and "stuck" on weaker (e.g. Windows laptop) GPUs.
+    const float kExpandTime = 0.7;   // seconds to approach full spread
+    // Largest reach any ripple can have (age -> inf => factor -> 1).
+    const float kMaxReach   = uRingSpeed * kExpandTime;
+    const float kRippleMax  = kBurst + kMaxReach + 3.0 * kGap + kRingWidth;
+    const float kRippleMax2 = kRippleMax * kRippleMax;
 
-        // Natural fade: stay near full strength for most of the life, then ease
-        // out smoothly (smoothstep tail) so the ripple never pops off abruptly.
-        float life = clamp(age / kLifetime, 0.0, 1.0);
-        float fade = 1.0 - smoothstep(0.55, 1.0, life);
-        vec2  dir  = normalize(FragPos.xz - center);
+    // Also skip ripples far from the camera — their normal perturbation is
+    // invisible at distance and only burns cycles. (Pure optimisation, no look change.)
+    float fragCamDist2 = dot(FragPos.xz - viewPos.xz, FragPos.xz - viewPos.xz);
+    bool  rippleVisibleHere = fragCamDist2 < (350.0 * 350.0);
 
-        // Rings expand fast at first, then ease to a bounded reach, so the ripple
-        // LINGERS near the impact and fades over its lifetime instead of racing
-        // outward forever. uRingSpeed sets how far it spreads; uRippleLifetime
-        // sets how long it stays — the two are independent.
-        const float kExpandTime = 0.7;   // seconds to approach full spread
-        float reach = uRingSpeed * kExpandTime * (1.0 - exp(-age / kExpandTime));
+    if (rippleVisibleHere) {
+        for (int i = 0; i < numRipples; i++) {
+            vec2  center = rippleSSBO.ripples[i].xy;
+            vec2  d2v    = FragPos.xz - center;
+            float dist2  = dot(d2v, d2v);
+            // EARLY OUT: outside this ripple's maximum footprint -> contributes 0.
+            if (dist2 > kRippleMax2 || dist2 < 1e-6) continue;
 
-        for (int k = 0; k < 4; k++) {
-            float r = kBurst + reach + float(k) * kGap;
-            if (dist > r + kRingWidth || dist < r - kRingWidth) continue;
+            float dist = sqrt(dist2);
+            float age  = rippleSSBO.ripples[i].z;
 
-            float wave = sin((dist - r) * (3.14159265 / kRingWidth));
-            finalNormal.x += dir.x * wave * kAmp[k] * uRingStrength * fade;
-            finalNormal.z += dir.y * wave * kAmp[k] * uRingStrength * fade;
+            float life = clamp(age / kLifetime, 0.0, 1.0);
+            float fade = 1.0 - smoothstep(0.55, 1.0, life);
+            vec2  dir  = d2v / dist;   // = normalize(), but reuse the sqrt we just did
+
+            float reach = kMaxReach * (1.0 - exp(-age / kExpandTime));
+
+            for (int k = 0; k < 4; k++) {
+                float r = kBurst + reach + float(k) * kGap;
+                if (dist > r + kRingWidth || dist < r - kRingWidth) continue;
+
+                float wave = sin((dist - r) * (3.14159265 / kRingWidth));
+                finalNormal.x += dir.x * wave * kAmp[k] * uRingStrength * fade;
+                finalNormal.z += dir.y * wave * kAmp[k] * uRingStrength * fade;
+            }
         }
     }
     finalNormal = normalize(finalNormal);
