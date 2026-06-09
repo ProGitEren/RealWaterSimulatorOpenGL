@@ -30,7 +30,7 @@ GPUFFTOcean::GPUFFTOcean(unsigned int resolution, float oceanSize, float windSpe
       m_windAngleDegrees(windAngleDegrees),
       m_choppiness(choppiness),
       m_heightScale(1.0f),        // 1/N normalization in displacement shader; modest scale
-      m_horizontalScale(0.08f),
+      m_horizontalScale(0.35f),   // was 0.08 (crushed choppiness to invisibility); now visible
       m_timeScale(2.0f),
       m_windDirection(glm::normalize(glm::vec2(std::cos(glm::radians(windAngleDegrees)), std::sin(glm::radians(windAngleDegrees))))),
       m_currentPhaseIndex(0),
@@ -178,7 +178,14 @@ void GPUFFTOcean::buildInitialSpectrum() {
 }
 
 void GPUFFTOcean::setWindSpeed(float v) {
-    m_windSpeed = glm::clamp(v, 5.0f, 10.0f);
+    m_windSpeed = glm::clamp(v, 2.0f, 30.0f);   // wider range -> calm ripples to big swell
+    buildInitialSpectrum();
+}
+
+void GPUFFTOcean::setWindAngle(float degrees) {
+    m_windAngleDegrees = degrees;
+    m_windDirection = glm::normalize(glm::vec2(std::cos(glm::radians(degrees)),
+                                               std::sin(glm::radians(degrees))));
     buildInitialSpectrum();
 }
 
@@ -370,5 +377,30 @@ glm::vec3 GPUFFTOcean::sampleOceanNormal(float worldX, float worldZ) const {
     const float hR = sampleOceanHeight(worldX + d, worldZ);
     const float hD = sampleOceanHeight(worldX, worldZ - d);
     const float hU = sampleOceanHeight(worldX, worldZ + d);
+    return glm::normalize(glm::vec3(-(hR - hL) / (2.0f * d), 1.0f, -(hU - hD) / (2.0f * d)));
+}
+
+float GPUFFTOcean::sampleSurfaceHeight(float worldX, float worldZ) const {
+    // The vertex shader maps grid point g -> world (g + disp.xz, disp.y). We want
+    // the height of whichever grid point landed at the *visual* world (X,Z), i.e.
+    // solve g + disp_xz(g) = (X,Z). Fixed-point iteration: g <- (X,Z) - disp_xz(g).
+    // Displacement is small relative to wavelength, so 3-4 iterations converge.
+    float gx = worldX, gz = worldZ;
+    for (int i = 0; i < 4; ++i) {
+        const glm::vec3 d = sampleDisplacement(gx, gz);
+        gx = worldX - d.x;
+        gz = worldZ - d.z;
+    }
+    return sampleDisplacement(gx, gz).y;
+}
+
+glm::vec3 GPUFFTOcean::sampleSurfaceNormal(float worldX, float worldZ) const {
+    // Same central-difference, but on the choppiness-corrected surface height so
+    // the slope matches what is actually drawn under the object.
+    const float d  = 2.0f;
+    const float hL = sampleSurfaceHeight(worldX - d, worldZ);
+    const float hR = sampleSurfaceHeight(worldX + d, worldZ);
+    const float hD = sampleSurfaceHeight(worldX, worldZ - d);
+    const float hU = sampleSurfaceHeight(worldX, worldZ + d);
     return glm::normalize(glm::vec3(-(hR - hL) / (2.0f * d), 1.0f, -(hU - hD) / (2.0f * d)));
 }

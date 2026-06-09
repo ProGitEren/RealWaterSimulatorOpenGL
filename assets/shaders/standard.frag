@@ -11,6 +11,7 @@ uniform vec3        viewPos;
 uniform samplerCube skybox;
 uniform sampler2D   normalMap;
 uniform sampler2D   disturbanceMap;
+uniform sampler2D   wakeFoamMap;   // world-space foam coverage painted by vehicles
 uniform float       oceanSize;
 uniform int         numRipples;
 
@@ -165,10 +166,25 @@ void main() {
     vec3  sunCol  = vec3(1.0, 0.96, 0.88);
     color += sunCol * (glint * 4.0 + glitter * 0.4);
 
-    // ---- FOAM: soft-edged whitecaps, sun-shaded (not pure white) ----
-    float foamMask  = smoothstep(0.05, 0.55, foam);
-    float foamLight = 0.65 + 0.35 * diffuse;
-    color = mix(color, vec3(1.05, 1.10, 1.18) * foamLight, foamMask * 0.85);
+    // ---- FOAM: whitecaps (FFT Jacobian) + vehicle wake foam (painted map) ----
+    float foamMask = smoothstep(0.05, 0.55, foam);
+    float wakeFoam = 0.0;
+    if (SurfaceMask > 0.5) {
+        // World-anchored map: uv = worldXZ/size + 0.5
+        vec2 foamUV = FragPos.xz / oceanSize + vec2(0.5);
+        float wake = texture(wakeFoamMap, foamUV).r;
+        // Break the trail up with a couple of noise octaves so it looks churned
+        // and dissipating, not a flat solid road.
+        float brk = 0.6
+                  + 0.25 * sin(FragPos.x * 0.6 + FragPos.z * 0.5)
+                  + 0.20 * sin(FragPos.x * 2.3 - FragPos.z * 1.9);
+        wakeFoam = smoothstep(0.12, 0.75, wake * brk);
+    }
+    float foamLight = 0.7 + 0.3 * diffuse;
+    vec3  foamCol   = vec3(0.95, 0.98, 1.02) * foamLight;
+    // whitecaps fairly opaque; wake foam softer so it reads as froth, not paint
+    color = mix(color, foamCol, foamMask * 0.85);
+    color = mix(color, foamCol, wakeFoam * 0.7);
 
     // ---- DISTANCE HAZE: soften far water into the sky at the horizon ----
     float dist = length(viewPos - FragPos);

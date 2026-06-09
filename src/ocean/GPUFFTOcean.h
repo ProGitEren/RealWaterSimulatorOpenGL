@@ -30,6 +30,8 @@ public:
     void setChoppiness(float v)      { m_choppiness      = v; }
     void setTimeScale(float v)       { m_timeScale       = v; }
     void setWindSpeed(float v);
+    void setWindAngle(float degrees);                       // rebuilds the spectrum
+    float getWindAngle() const { return m_windAngleDegrees; }
 
     // CPU-side ocean-surface sampling (Phase 0B). The displacement texture is
     // read back to the CPU once per update(); sampleOceanHeight returns the
@@ -38,6 +40,14 @@ public:
     glm::vec3 sampleDisplacement(float worldX, float worldZ) const;
     float     sampleOceanHeight(float worldX, float worldZ) const;
     glm::vec3 sampleOceanNormal(float worldX, float worldZ) const;
+
+    // Choppiness-correct surface query: the FFT pushes vertices sideways
+    // (horizontal displacement), so the surface point that VISUALLY appears at
+    // world (X,Z) came from a different grid point. These invert that mapping
+    // (fixed-point iteration) so floating objects sit ON the wave, not beside
+    // it — the error otherwise grows with wave size / choppiness.
+    float     sampleSurfaceHeight(float worldX, float worldZ) const;
+    glm::vec3 sampleSurfaceNormal(float worldX, float worldZ) const;
     double    getLastReadbackMs() const { return m_lastReadbackMs; }
 
 private:

@@ -9,6 +9,9 @@
 #include "ocean/OceanMesh.h"
 #include "water/WaterSimulation.h"
 #include "water/RainSystem.h"
+#include "water/WakeFoam.h"
+#include "water/BoatPhysics.h"
+#include "water/FoamMap.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -152,6 +155,7 @@ int main() {
     shader.setInt("displacementMap", 1);
     shader.setInt("normalMap", 2);
     shader.setInt("disturbanceMap", 3);
+    shader.setInt("wakeFoamMap", 10);   // vehicle wake foam, painted on the surface
 
     debugWireframeShader.use();
     debugWireframeShader.setInt("displacementMap", 1);
@@ -200,6 +204,7 @@ int main() {
     GPUFFTOcean    ocean(kOceanResolution, kOceanMeshRes * kOceanMeshTile, 8.0f, 35.0f, 1.6f);
     OceanMesh      oceanMesh(kOceanMeshRes, kOceanMeshTile);
     GPUDisturbance disturbance(256u, kOceanMeshRes * kOceanMeshTile);
+    FoamMap        foamMap(1024, kOceanMeshRes * kOceanMeshTile); // 1m/texel — smoother foam edges
 
     // --- OBJECTS ---
     // Poly Haven marble cliff (glTF + PBR textures). The procedural rock
@@ -224,11 +229,14 @@ int main() {
     struct Vehicle {
         Model* model;
         glm::vec3 pos;
-        float heading;   // radians, yaw
-        float speed;     // m/s
+        float heading;    // radians, yaw
+        float speed;      // m/s
         float scale;
-        float yOffset;   // sit at/just above the waterline
-        float modelYaw;  // extra yaw so the model's forward axis aligns to heading
+        float yOffset;    // sit at/just above the waterline
+        float modelYaw;   // extra yaw so the model's forward axis aligns to heading
+        float wakeWidth;  // hull half-width (m) — foam wake spread
+        float hullLength; // bow-to-stern length (m)
+        BoatPhysics phys; // force-based 6-DOF heave/pitch/roll state
     };
 
     // Sizes: jet-ski raw ~15u, yacht ~3068u, ship ~5159u -> scale to sane metres.
@@ -242,10 +250,21 @@ int main() {
     const float kHalfPi = 1.5707963f;
     const float kPiF    = 3.1415927f;
     std::vector<Vehicle> vehicles = {
-        { &jetski,  glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f), 16.0f, 120.0f, 1.5f, -kHalfPi },
-        { &yacht,   glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  8.0f, 0.03f,  0.0f,  kPiF    },
-        { &bigShip, glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  5.0f, 0.02f,  0.0f,  0.0f    },
+        //         model     position                                              heading        spd  scale   yOff  modelYaw  wakeW  hullLen
+        { &jetski,  glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f), 16.0f, 120.0f, 1.5f, -kHalfPi,  4.0f,   5.0f },
+        { &yacht,   glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  8.0f, 0.03f,  0.0f,  kPiF,    14.0f,  90.0f },
+        { &bigShip, glm::vec3(frand(-250,250), 0.0f, frand(-250,250)), frand(0, 6.28f),  5.0f, 0.02f,  0.0f,  0.0f,    20.0f, 110.0f },
     };
+    // Configure each vehicle's buoyancy hull dimensions from its length/beam.
+    for (Vehicle& v : vehicles) {
+        v.phys.length = v.hullLength;
+        v.phys.beam   = v.wakeWidth * 2.0f;
+        v.phys.floatHeight = v.yOffset;
+    }
+    // Jet-ski is small/light → snappier; big ship → heavier/slower response.
+    vehicles[0].phys.linearDamp = 3.5f; vehicles[0].phys.angularDamp = 4.0f;
+    vehicles[2].phys.linearDamp = 1.6f; vehicles[2].phys.angularDamp = 2.4f;
+
     bool vehiclesMoving = true;   // toggled by P
     bool pKeyWasDown    = false;
     const float kBayBound = 430.0f; // turn the vehicles back inside this radius
@@ -308,8 +327,13 @@ int main() {
     const int screenWidth  = 1024;
     const int screenHeight = 768;
 
-    float buoyancyTilt = 0.6f; // how strongly floaters lean to the wave normal (0=flat, 1=full)
+    // --- Force-based buoyancy tuning (applied to every vehicle each frame) ---
+    float buoyancyStrength = 3.0f; // up-force per metre submerged (higher = floats higher/firmer)
+    float buoyancyResponse = 2.0f; // heave damping (higher = settles faster, less bobbing)
+    float angularDamp      = 2.8f; // pitch/roll damping (higher = steadier, less rocking)
     float wakeStrength = 0.01f; // per-step ripple amplitude a moving vehicle injects (accumulates ~60x/s)
+    float foamIntensity = 1.0f; // how much wake foam vehicles paint into the foam map
+    float foamDecay = 0.9f;     // foam dissipation rate (per second); lower = longer trails
 
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -434,21 +458,18 @@ int main() {
             ocean.update(kFixedDt);
             disturbance.update(kFixedDt);
 
-            // Vehicles: advance along heading; if past the bay bound, turn back
-            // toward the centre so they stay on the water.
+            // Vehicles: advance NAVIGATION (XZ + heading) along the path; if past
+            // the bay bound, steer back. (Heave/pitch/roll come from BoatPhysics,
+            // stepped once per frame after the ocean readback.)
             if (vehiclesMoving) {
                 for (Vehicle& v : vehicles) {
                     glm::vec3 dir(std::sin(v.heading), 0.0f, std::cos(v.heading));
                     v.pos += dir * v.speed * kFixedDt;
                     float distXZ = std::sqrt(v.pos.x * v.pos.x + v.pos.z * v.pos.z);
-                    if (distXZ > kBayBound) {
-                        // steer heading toward the origin
+                    if (distXZ > kBayBound)
                         v.heading = std::atan2(-v.pos.x, -v.pos.z);
-                    }
 
-                    // Wake: inject a small ripple at the hull each fixed step;
-                    // repeated along the path it lays down a trail. Amplitude
-                    // scales with speed, far below the 3.0 C-key burst.
+                    // Ripple wake into the disturbance height field.
                     disturbance.disturb(glm::vec2(v.pos.x, v.pos.z),
                                         wakeStrength * glm::min(1.0f, v.speed / 12.0f));
                 }
@@ -460,29 +481,91 @@ int main() {
         // fixed substeps) for object height sampling — see readbackDisplacement().
         ocean.readbackDisplacement();
 
+        // --- Vehicle buoyancy (force-based 6-DOF) + foam, once per frame ---
+        // Step the rigid-body buoyancy using the (now-current) ocean heights.
+        // Navigation set v.pos/heading above; physics solves heave/pitch/roll.
+        {
+            auto surfFn = [&](float x, float z) { return ocean.sampleSurfaceHeight(x, z); };
+            for (Vehicle& v : vehicles) {
+                v.phys.buoyancy    = buoyancyStrength;
+                v.phys.linearDamp  = buoyancyResponse;
+                v.phys.angularDamp = angularDamp;
+                v.phys.step(deltaTime, v.pos, v.heading + v.modelYaw, surfFn);
+
+                // Paint a light foam trail at the stern + a thin bow line into the
+                // foam map. Keep amounts SMALL — the map accumulates ~60x/s, so big
+                // values instantly saturate to a solid white road. Decay clears it.
+                if (vehiclesMoving && v.speed > 0.5f) {
+                    const float ca = std::cos(v.heading), sa = std::sin(v.heading);
+                    const glm::vec2 fwd(sa, ca);
+                    const glm::vec2 c(v.pos.x, v.pos.z);
+                    const float hl  = 0.5f * v.hullLength;
+                    // tiny per-frame deposit, scaled by speed + intensity
+                    const float amt = foamIntensity * glm::min(1.0f, v.speed / 10.0f) * 0.12f;
+                    // stern churn — the main wake source (modest radius)
+                    glm::vec2 stern = c - fwd * hl;
+                    foamMap.splat(stern.x, stern.y, v.wakeWidth * 0.8f, amt);
+                    // faint bow line
+                    glm::vec2 bow = c + fwd * hl;
+                    foamMap.splat(bow.x, bow.y, v.wakeWidth * 0.5f, amt * 0.4f);
+                }
+            }
+            foamMap.decay(deltaTime, foamDecay);
+            foamMap.upload();
+        }
+
         // --- ImGui control panel ---
         {
-            ImGui::Begin("Controls");
+            ImGui::Begin("Water Controls");
             ImGui::Text("%.1f FPS  (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
             ImGui::Text("ocean readback: %.2f ms", ocean.getLastReadbackMs());
             ImGui::Separator();
-            if (ImGui::CollapsingHeader("Ocean", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+            if (ImGui::CollapsingHeader("Waves / Spectrum", ImGuiTreeNodeFlags_DefaultOpen)) {
+                // wind speed drives the whole sea state (bigger -> larger swell)
                 float wind = ocean.getWindSpeed();
-                if (ImGui::SliderFloat("wind speed",   &wind,       5.0f, 10.0f)) ocean.setWindSpeed(wind);
+                if (ImGui::SliderFloat("wind speed (m/s)", &wind, 2.0f, 30.0f)) ocean.setWindSpeed(wind);
+                float windAng = ocean.getWindAngle();
+                if (ImGui::SliderFloat("wind direction (deg)", &windAng, 0.0f, 360.0f)) ocean.setWindAngle(windAng);
+                ImGui::TextDisabled("(wind changes rebuild the spectrum)");
+                ImGui::Spacing();
                 float heightScale = ocean.getHeightScale();
-                if (ImGui::SliderFloat("height scale", &heightScale, 0.1f, 4.0f)) ocean.setHeightScale(heightScale);
+                if (ImGui::SliderFloat("wave height", &heightScale, 0.0f, 6.0f)) ocean.setHeightScale(heightScale);
                 float chop = ocean.getChoppiness();
-                if (ImGui::SliderFloat("choppiness",   &chop,       0.0f, 2.5f))  ocean.setChoppiness(chop);
+                if (ImGui::SliderFloat("choppiness",  &chop, 0.0f, 3.0f)) ocean.setChoppiness(chop);
+                float hscale = ocean.getHorizontalScale();
+                if (ImGui::SliderFloat("horiz. displace", &hscale, 0.0f, 1.2f)) ocean.setHorizontalScale(hscale);
                 float timeScale = ocean.getTimeScale();
-                if (ImGui::SliderFloat("time scale",   &timeScale,  0.1f, 4.0f))  ocean.setTimeScale(timeScale);
+                if (ImGui::SliderFloat("time scale (speed)", &timeScale, 0.0f, 4.0f)) ocean.setTimeScale(timeScale);
+                if (ImGui::Button("Calm"))  { ocean.setWindSpeed(5.0f);  ocean.setHeightScale(0.6f); ocean.setChoppiness(0.8f); }
+                ImGui::SameLine();
+                if (ImGui::Button("Choppy")){ ocean.setWindSpeed(12.0f); ocean.setHeightScale(1.4f); ocean.setChoppiness(1.8f); }
+                ImGui::SameLine();
+                if (ImGui::Button("Storm")) { ocean.setWindSpeed(22.0f); ocean.setHeightScale(3.0f); ocean.setChoppiness(2.4f); }
             }
-            if (ImGui::CollapsingHeader("Buoyancy", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SliderFloat("wave tilt", &buoyancyTilt, 0.0f, 1.0f);
+
+            if (ImGui::CollapsingHeader("Buoyancy (force-based 6-DOF)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SliderFloat("float strength", &buoyancyStrength, 1.0f, 8.0f);
+                ImGui::SliderFloat("heave damping",  &buoyancyResponse, 0.3f, 8.0f);
+                ImGui::SliderFloat("tilt damping",   &angularDamp,      0.5f, 8.0f);
+                ImGui::TextDisabled("higher damping = steadier; lower = more bob/rock");
             }
-            if (ImGui::CollapsingHeader("Wakes", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SliderFloat("wake strength", &wakeStrength, 0.0f, 0.05f);
+
+            if (ImGui::CollapsingHeader("Wake & Foam", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SliderFloat("ripple strength", &wakeStrength, 0.0f, 0.05f);
+                ImGui::SliderFloat("foam intensity",  &foamIntensity, 0.0f, 4.0f);
+                ImGui::SliderFloat("foam fade/sec",   &foamDecay, 0.1f, 2.0f);
             }
-            ImGui::Checkbox("vehicles moving (P)", &vehiclesMoving);
+
+            if (ImGui::CollapsingHeader("Vehicles", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Checkbox("moving (P)", &vehiclesMoving);
+                for (size_t i = 0; i < vehicles.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    const char* name = (i == 0) ? "jet-ski" : (i == 1) ? "yacht" : "big-ship";
+                    ImGui::SliderFloat(name, &vehicles[i].speed, 0.0f, 30.0f);
+                    ImGui::PopID();
+                }
+            }
             ImGui::End();
         }
 
@@ -502,6 +585,8 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, ocean.getNormalTexture());
         glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, disturbance.getHeightTexture());
+        glActiveTexture(GL_TEXTURE10);
+        glBindTexture(GL_TEXTURE_2D, foamMap.texture());   // wake foam map -> standard.frag
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
 
@@ -547,21 +632,13 @@ int main() {
                 coastalCliff.draw(objectShader);
             }
 
-            // --- VEHICLES: jet-ski / yacht / big-ship riding the waves ---
-            for (const Vehicle& v : vehicles) {
-                // Float: sit on the ocean surface (1-frame-stale readback) + freeboard.
-                const float surfH = ocean.sampleOceanHeight(v.pos.x, v.pos.z);
-                v.model->setPosition(glm::vec3(v.pos.x, surfH + v.yOffset, v.pos.z));
+            // --- VEHICLES: draw using the force-based 6-DOF physics result ---
+            // BoatPhysics (stepped above, per frame) solved heave/pitch/roll from
+            // per-facet buoyancy forces; we just read its position/orientation.
+            for (Vehicle& v : vehicles) {
+                v.model->setPosition(v.phys.position);
                 v.model->setScale(v.scale);
-
-                // Orient: heading yaw first, then tilt the hull to the wave normal.
-                const glm::quat yaw  = glm::angleAxis(v.heading + v.modelYaw, glm::vec3(0.0f, 1.0f, 0.0f));
-                const glm::vec3 up(0.0f, 1.0f, 0.0f);
-                const glm::vec3 n    = glm::normalize(glm::mix(up, ocean.sampleOceanNormal(v.pos.x, v.pos.z), buoyancyTilt));
-                const glm::vec3 axis = glm::cross(up, n);
-                const float     dot  = glm::dot(up, n);
-                const glm::quat tilt = glm::normalize(glm::quat(1.0f + dot, axis.x, axis.y, axis.z));
-                v.model->setOrientation(tilt * yaw);
+                v.model->setOrientation(v.phys.orientation);
                 v.model->draw(objectShader);
             }
         }
@@ -580,6 +657,7 @@ int main() {
             glBindVertexArray(0);
             glDepthFunc(GL_LESS);
             glDepthMask(GL_TRUE);
+
 
             // Rain after skybox — blends correctly over sky and water
             rainSystem.render(rainShader, projection, view, camera.Position);

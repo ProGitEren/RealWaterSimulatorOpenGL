@@ -19,6 +19,9 @@ set(SOURCES
     src/ocean/GPUDisturbance.cpp
     src/water/WaterSimulation.cpp
     src/water/RainSystem.cpp
+    src/water/WakeFoam.cpp
+    src/water/BoatPhysics.cpp
+    src/water/FoamMap.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

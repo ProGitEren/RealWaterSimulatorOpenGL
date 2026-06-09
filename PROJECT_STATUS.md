@@ -13,7 +13,7 @@
 ## 1. What This Project Is
 
 A real-time, GPU-accelerated **ocean / water simulator** in **C++17 + OpenGL 4.6**, built
-on GLFW + GLAD + GLM + STB (all vendored). It started as an FFT ocean and has grown into
+on GLFW + GLAD + GLM + STB + cgltf + Dear ImGui (all vendored). It started as an FFT ocean and has grown into
 a small scene: a crisp FFT sea inside a ring of photoreal coastal cliffs, with rain,
 interactive ripples, loadable glTF models, procedural terrain, and moving vehicles
 (jet-ski / yacht / big-ship).
@@ -196,14 +196,17 @@ RealWaterSimulatorOpenGL/
 │   ├── textures/skybox/        Cubemap faces (+ sky_1/2/3, environment_1 variants)
 │   ├── textures/terrain/       Tiling terrain textures (rock_diff.jpg, rock_nor.jpg)
 │   └── models/                 glTF models (rocks, cliff, jet-ski, yacht, big-ship)
-├── external/                   Vendored, header/compiled-in: glad, glfw, glm, stb, cgltf
+├── external/                   Vendored: glad, glfw, glm, stb, cgltf, imgui (Dear ImGui)
 └── src/
     ├── main.cpp                Entry point: scene setup, render loop, input, vehicles
     ├── core/                   Window (GLFW), Camera (fly cam)
     ├── graphics/               Shader, Mesh, Model (glTF), Texture, Terrain, RockGenerator
-    ├── ocean/                  GPUFFTOcean, OceanMesh, GPUDisturbance
-    └── water/                  WaterSimulation (CPU grid), RainSystem
+    ├── ocean/                  GPUFFTOcean (FFT + CPU height readback), OceanMesh, GPUDisturbance
+    └── water/                  WaterSimulation, RainSystem, BoatPhysics (6-DOF buoyancy),
+                                FoamMap (surface wake foam), WakeFoam (old sprite foam, unused)
 ```
+Shaders: `object.{vert,frag}` (models), `terrain.{vert,frag}`, `wakefoam.{vert,frag}` (old
+sprite foam, unused). Wake foam now lives in `standard.frag` via the `wakeFoamMap` sampler.
 
 ### Backup / dead files (ignore unless archaeology needed)
 `src/main_v1.cpp … main_v8.cpp`, `src/main_gerstner_backup.cpp`, `main_pre_gpu_fft_backup.cpp`,
@@ -359,7 +362,7 @@ Uses inverse-transpose normal matrix (supports non-uniform scale). **Gamma-encod
 Defined in `main.cpp`. A `Vehicle` struct:
 ```cpp
 struct Vehicle { Model* model; glm::vec3 pos; float heading; float speed;
-                 float scale; float yOffset; float modelYaw; };
+                 float scale; float yOffset; float modelYaw; float wakeWidth; };
 ```
 - Placed at **random positions** in the bay, random heading. Each has its own speed/scale.
 - **Movement** (in the fixed-timestep loop): advance along `heading`; if past
@@ -368,16 +371,48 @@ struct Vehicle { Model* model; glm::vec3 pos; float heading; float speed;
 - **`modelYaw`** corrects each model's authored-forward axis vs travel direction:
   - jet-ski `-π/2` (it faced 90° right), yacht `+π` (reversed), big-ship `0` (correct).
   - **If a vehicle still faces wrong after a model change, this is the field to adjust.**
+- **`wakeWidth`** = hull half-width (m); controls how wide the foam wake fans out.
 
 Current config (the `vehicles` vector):
 ```
-jetski : speed 16, scale 120,  yOffset 1.5, modelYaw -π/2
-yacht  : speed  8, scale 0.03, yOffset 0.0, modelYaw  +π
-bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0
+jetski : speed 16, scale 120,  yOffset 1.5, modelYaw -π/2, wakeWidth 4
+yacht  : speed  8, scale 0.03, yOffset 0.0, modelYaw  +π,  wakeWidth 14
+bigShip: speed  5, scale 0.02, yOffset 0.0, modelYaw   0,  wakeWidth 20
 ```
 
-> **Not yet done:** vehicles sit at a **fixed Y** — they do **not** bob/tilt with the
-> waves (that's buoyancy, see §11). They also don't yet create wakes.
+### Buoyancy (vehicles float, bob, and tilt) — DONE
+**Force-based 6-DOF buoyancy** (`src/water/BoatPhysics.{h,cpp}`). Each vehicle owns a
+`BoatPhysics` that solves heave + pitch + roll from per-facet Archimedes forces:
+- The hull is a grid of facets (facetsX × facetsZ) in the boat's local frame.
+- Each frame: transform facets to world, look up `sampleSurfaceHeight` under each, and for
+  submerged facets add an up-force ∝ submerged depth; the **sum** drives heave, and the
+  **lever-arm torques** (fore/aft → pitch, port/starboard → roll) drive rotation. Damped
+  integration (`linearDamp`/`angularDamp`) keeps it stable; tilt is clamped to ±0.6 rad.
+- **Navigation (XZ + yaw) stays scripted**; only the vertical + tilt are dynamic. So boats
+  follow their path but physically bob/pitch/roll on the swell.
+- A long ship's facets span many wavelengths, so short chop averages out — big ships ride
+  smoothly, small ones bob lively. ImGui: float strength, heave damping, tilt damping.
+- **Critical detail:** sampling uses `ocean.sampleSurfaceHeight()` (choppiness-correct —
+  inverts the FFT horizontal displacement), NOT `sampleOceanHeight`, so hulls sit on the wave
+  they're actually on even as waves grow — see §6 and §12.
+
+> History: this replaced an earlier kinematic snap-to-surface (single point → multi-point +
+> low-pass). The force model gives emergent heave/pitch/roll. Tunable per vehicle.
+
+### Wakes — DONE (three parts)
+1. **Water ripple wake:** each fixed step a moving vehicle calls `disturbance.disturb()` at
+   the hull (amplitude ∝ speed), laying a ripple trail into the `GPUDisturbance` height field.
+   Strength via the `wakeStrength` ImGui slider.
+2. **Foam wake (visual) — surface foam map:** `src/water/FoamMap.{h,cpp}` — a world-space
+   coverage texture over the ocean patch. Moving vehicles **paint** foam into it each frame
+   (bow cap + hull-side splats + stern churn); it `decay()`s over time and is `upload()`ed
+   once per frame. The water shader (`standard.frag`, `wakeFoamMap` on texture unit 10)
+   samples it by `worldXZ/oceanSize+0.5` and blends white foam into the surface. **This is the
+   current foam system** — it lives ON the water, so there's no overdraw on the hull. ImGui:
+   foam intensity, foam fade/sec.
+   > NOTE: `src/water/WakeFoam.{h,cpp}` + `wakefoam.{vert,frag}` are the **older particle**
+   > foam (camera-facing sprites). It washed white over the hull (overdraw bug) and was
+   > replaced by the foam map. Files remain in the tree but are **no longer used** by main.cpp.
 
 ---
 
@@ -400,31 +435,43 @@ boulder mesh and is unused but kept.
 
 ---
 
-## 10. Water Interaction Already Present
+## 10. Water Interaction (implemented)
 
 - **Rain** (`water/RainSystem`): falling streaks, central splash jets, and **expanding
   ripple ring** clusters rendered in `standard.frag` (SSBO of ripple centres+age, binding 4).
   Ripples fade via `smoothstep` tail-off (tuned to not "pop" off).
 - **Interactive disturbance** (`ocean/GPUDisturbance`): press **C** to fire a wave ~40 m in
-  front of the camera. A GPU height field that propagates and feeds the water normals. **This
-  system is the natural basis for boat wakes** (see §11).
+  front of the camera. A GPU height field that propagates and feeds the water normals; also
+  used per-frame by the vehicle wakes.
 - **CPU water grid** (`water/WaterSimulation`): a separate physics grid driving rain ripples.
+- **Ocean → object (buoyancy):** vehicles float, bob, and tilt to the surface — see §8.
+- **Object → ocean (wakes):** moving vehicles inject ripples (`GPUDisturbance`) **and** spawn
+  foam (`WakeFoam`) — see §8.
+
+### Ocean height sampling (CPU readback) — `GPUFFTOcean`
+The displacement texture is read back to the CPU once per render frame via a **double-buffered
+PBO** (`readbackDisplacement()`). A synchronous `glGetTexImage` stalls on the in-flight FFT
+(~15 ms → ~55 fps); the PBO ping-pong copies async and maps *last* frame's buffer, so the
+height data is 1 frame stale (negligible for buoyancy) with no stall. Sampling API:
+- `sampleDisplacement(x,z)` → bilinear `{dx, height, dz}` at a world XZ.
+- `sampleOceanHeight/Normal(x,z)` → naive height/slope **at** that XZ.
+- `sampleSurfaceHeight/Normal(x,z)` → **choppiness-correct** (inverts horizontal displacement
+  via fixed-point iteration). **Buoyancy uses these** so hulls track the right wave.
 
 ---
 
 ## 11. Suggested Next Steps (roadmap)
 
-The originally-requested end goal is **dynamic water ↔ object interaction**. With the model
-system and `GPUDisturbance` in place, the natural next features are:
+The core **dynamic water ↔ object interaction** is now implemented (buoyancy + ripple wakes +
+foam wakes). Remaining polish / next features:
 
-1. **Buoyancy (water → objects)** — sample the FFT/ocean height under each vehicle and set
-   its Y to float; tilt it to the local wave normal so it bobs and rolls. Needs a
-   `sampleOceanHeight(x,z)` helper (read back displacement, or recompute from the same data).
-2. **Wakes (objects → water)** — a moving vehicle injects disturbances along its path via the
-   existing `GPUDisturbance::disturb()` (reuse the C-key mechanism per frame at the hull).
-3. **Texturing the yacht/ship** — they shipped with no textures; either find textured models
-   or author simple materials. Add **embedded-`.glb`-texture** support in `Model.cpp` for
-   self-contained Sketchfab exports.
+1. **Texturing the yacht/ship** — they shipped with no textures (flat base colours). Find
+   textured models or author materials. Add **embedded-`.glb`-texture** support in `Model.cpp`
+   for self-contained Sketchfab exports (loader currently handles external URIs only).
+2. **Foam tuning** — `WakeFoam` emit rate/size/life and the `wakefoam.frag` look are easy to
+   push (more spray, longer-lived trail, brighter core). Could also add bow spray.
+3. **Buoyancy realism** — currently kinematic (snap to surface + tilt). Could add inertia/damping
+   so boats lag the waves slightly instead of rigidly following.
 4. **Polish:** seal the last corner gaps in the cliff ring; optional water-edge fade.
 
 ---
@@ -437,7 +484,9 @@ system and `GPUDisturbance` in place, the natural next features are:
   `git rm -r --cached build/` (see §2).
 - **Water tile edge** is hidden behind the cliff ring, but tiny **corner gaps** remain
   visible from a top-down view.
-- **Vehicles don't float/bob** yet (fixed Y) and have **no wakes** (next feature — §11).
+- **Buoyancy is kinematic** — vehicles snap to the surface + tilt each frame (no inertia/lag).
+  It is choppiness-corrected (§8) so they track the right wave; bigger waves no longer drift
+  the hull beside the crest. Tune feel via the `wave tilt` ImGui slider.
 - **Yacht & big-ship are untextured** (flat base-colour) — a model limitation.
 - **Embedded-texture `.glb`** files won't show textures (loader handles external URIs only).
 - `assets/models/test_avocado.glb` is an **unused loader test asset** (Khronos sample) — safe
@@ -465,6 +514,12 @@ system and `GPUDisturbance` in place, the natural next features are:
 | Left / Right | Time scale -/+ |
 | R | Start recording frames to `frames/*.png` (600 frames) |
 | Esc | Exit |
+
+### On-screen ImGui panel ("Controls" window)
+A Dear ImGui panel shows **FPS + ocean readback ms** and live sliders: wind speed, height
+scale, choppiness, time scale (ocean tuning), plus **wave tilt** (buoyancy tilt strength) and
+**wake strength** (ripple amplitude vehicles inject). Input is gated by `io.WantCaptureMouse/
+Keyboard` so interacting with the panel doesn't drive the camera.
 
 ### Recording → video
 Frames save to `frames/frame_%d.png` (start at 0), captured at the 60 FPS fixed step:
@@ -494,11 +549,13 @@ ffmpeg -framerate 60 -start_number 0 -i frames/frame_%d.png -c:v libx264 -pix_fm
 ## 15. Quick-Start for an AI Agent Continuing This Work
 
 1. Read this file end-to-end, then skim `src/main.cpp` (scene setup + render loop) and
-   `src/ocean/GPUFFTOcean.cpp` (the FFT dispatch).
-2. **Commit the existing tree first** (and fix `.gitignore`) — see §2.
-3. Build in `build_linux/` and run to see the current scene (§3).
-4. For the next feature, start with **buoyancy** (§11.1) — it's the highest-impact piece of
-   the originally-intended "dynamic water interaction," and all prerequisites (model system,
-   ocean height data) already exist.
+   `src/ocean/GPUFFTOcean.cpp` (the FFT dispatch + CPU height readback).
+2. Build in `build_linux/` and run to see the current scene (§3). Note the new deps: **Dear
+   ImGui** and `glm/gtc/quaternion.hpp` are used — a fresh `cmake` reconfigure picks them up.
+3. The core interaction is **done**: buoyancy (choppiness-correct, §8), ripple wakes, and
+   **foam wakes** (`WakeFoam`, §8/§10). Next features are in §11 (texturing the ship/yacht,
+   foam/buoyancy tuning, cliff-corner polish).
+4. **Buoyancy gotcha:** always sample `ocean.sampleSurfaceHeight/Normal` (choppiness-correct),
+   never `sampleOceanHeight` directly — the latter makes hulls drift beside the wave (§6/§8).
 5. When touching the FFT, re-read §6 carefully — the data layout, normalization, ping-pong
    parity, and the UV-tiling gotcha are easy to break.
