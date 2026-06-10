@@ -515,3 +515,104 @@ next = (2·current − previous + waveC · laplacian) · damping
 | Loading models (glTF) | `src/graphics/Model.cpp` (+ `Mesh`, `Texture`) |
 | Object/rock/cliff shading | `assets/shaders/object.frag` |
 | All tunable parameters | `src/main.cpp` ImGui block (~line 670) |
+
+---
+
+## 11. Credits, licenses & references (attribution + versioning)
+
+Everything in the project that originates from someone else — vendored libraries, art assets, and
+published algorithms — is recorded here, with the version we ship and the license we're bound by.
+Items marked **TODO** are unresolved attribution gaps that must be closed before public release.
+
+### 11.1 Third-party libraries (all vendored under `external/`)
+
+Versions are read from the vendored headers; pin these in any write-up.
+
+| Library | Version | License | Role | License file in-tree |
+|---|---|---|---|---|
+| GLFW | **3.4.0** | zlib/libpng | window + input + GL context | `external/glfw/LICENSE.md` ✓ |
+| Dear ImGui | **1.91.9** | MIT | control-panel UI | `external/imgui/LICENSE.txt` ✓ |
+| GLM | **1.1.0** | MIT / "The Happy Bunny" | vector/matrix math | ⚠️ **TODO** — none vendored |
+| stb_image | **2.30** | public domain (MIT / Unlicense) | image loading | banner in header only |
+| stb_image_write | **1.16** | public domain (MIT / Unlicense) | PNG frame capture | banner in header only |
+| cgltf | **1.15** | MIT | glTF parser | banner in header only |
+| GLAD | generated, **OpenGL 4.6 core** | glad code public-domain/MIT; Khronos headers Apache-2.0/MIT | GL function loader | ⚠️ **TODO** — none vendored |
+
+- **Engine targets:** C++17, OpenGL 4.6 core profile (compute shaders + SSBO + image load/store).
+  Build with CMake ≥ 3.15. `external/` is third-party and excluded from the quarter study docs.
+- **Action:** add the upstream license text for **GLM, stb, cgltf, and GLAD** (the others already
+  ship a license file).
+
+### 11.2 3D models — **CC-BY-4.0, author credit is legally required**
+
+These ship from Sketchfab under CC-BY-4.0; the author **must** be credited wherever the work is
+shared (report, slides, repo). Per-model `license.txt` files are bundled; the required credit lines
+are reproduced here so they travel with the project:
+
+- **Jet-ski** — *"Kawasaki 310XUltra Jet Ski"* by **XOIAL**
+  (https://sketchfab.com/3d-models/kawasaki-310xultra-jet-ski-37a2348f02da472d98310fd5621307c6),
+  licensed under CC-BY-4.0. — `assets/models/jet-ski/`
+- **Yacht** — *"Yacht"* by **Gman The Cruise Dude**
+  (https://sketchfab.com/3d-models/yacht-5d8bd8b42bbc4cb1ad42d5ae68a63794),
+  licensed under CC-BY-4.0. — `assets/models/yacht/`
+- **Big ship** — *"SS Royal Bastion"* by **Gman The Cruise Dude**
+  (https://sketchfab.com/3d-models/ss-royal-bastion-a18c4bafe79744129cd9e1f3557a0168),
+  licensed under CC-BY-4.0. — `assets/models/big-ship/`
+
+### 11.3 Poly Haven assets — CC0 (credit by convention, not required)
+
+Models + their PBR texture sets, all **CC0 1.0** (public domain) from polyhaven.com:
+
+- **coastal_cliff_04** — the cliff ring around the bay (`assets/models/mountain_terrain/`, loaded at
+  `main.cpp:283`).
+- **marble_cliff_05** — the central rock (`assets/models/rock_marble_cliff_05/`, loaded at
+  `main.cpp:217`).
+- **marble_cliff_06**, **dry_riverbed_rock** — present in the tree but **not loaded by any code**.
+  Either credit-and-keep or delete to avoid shipping unused assets.
+
+### 11.4 Skybox cubemaps — ⚠️ **TODO: source + license unknown**
+
+Four cubemap sets ship in `assets/textures/skybox/` (the root set + `environment_1`, `sky_1`,
+`sky_2`, `sky_3`), six faces each. **No license or source file accompanies them.** Their origin and
+license must be identified and recorded here before any public distribution — this is the project's
+highest-priority attribution gap.
+
+### 11.5 Algorithms & techniques (academic references)
+
+Implemented from published work; cite these in the report:
+
+| Technique | Reference | Where in code |
+|---|---|---|
+| FFT ocean surface (spectrum → IFFT → displacement, choppiness, Jacobian foam) | Tessendorf, *Simulating Ocean Water*, SIGGRAPH 2001 | `src/ocean/GPUFFTOcean.cpp`, `assets/shaders/fft_*.comp` |
+| Unified directional wave spectrum (long+short wave terms, JONSWAP γ, spreading Δ, capillary 0.23 m/s) | Elfouhaily, Chapron, Katsaros & Vandemark, 1997 ("Elfouhaily/IFREMER") | `fft_initial_spectrum.comp:49-77` |
+| Gravity–capillary dispersion `ω = √(g·k·(1+(k/k_m)²))` | Standard oceanography (Lamb; Kinsman) | `fft_initial_spectrum.comp:33` |
+| Stockham auto-sort radix-2 FFT (no shared-memory cap) | Stockham FFT (Cochran et al.; cf. GPU Gems FFT-ocean) | `fft_horizontal.comp`, `fft_vertical.comp`, `GPUFFTOcean.cpp:228` |
+| Fresnel reflectance approximation (R₀ = 0.02) | Schlick, 1994 | `assets/shaders/standard.frag:160` |
+| Normal mapping without precomputed tangents (cotangent frame) | Mikkelsen, 2010 (surface-gradient / cotangent-frame trick) | `assets/shaders/object.frag:28` |
+| 2-D wave-equation wake field via explicit Verlet integration | Standard finite-difference / Verlet | `assets/shaders/disturbance_propagate.comp` |
+| Steering behaviours (containment, separation, obstacle avoidance) | Reynolds, *Steering Behaviors / Boids*, 1987/1999 | `src/main.cpp:549-590` |
+| Exposure tone-mapping `1 − e^(−color·exposure)` | Standard HDR tonemap | `assets/shaders/standard.frag` |
+
+> **TODO — adapted vs. from-scratch:** the spectrum code's structure closely matches a well-known
+> open-source GPU-ocean implementation. If it was adapted from a specific repo/tutorial rather than
+> coded directly from the Elfouhaily paper, add that repo + its license here.
+
+### 11.6 Code provenance — ⚠️ **TODO: verify LearnOpenGL derivation**
+
+The Q3 engine boilerplate — `src/core/Camera.cpp`, `src/graphics/Shader.cpp`,
+`src/graphics/Mesh.cpp`, and the skybox/cubemap loader — closely follows the **LearnOpenGL**
+tutorials (Euler-angle camera with integer `ProcessKeyboard` direction codes + `GetViewMatrix`, the
+`.xyww` skybox depth trick, the `Shader` `setX` uniform wrapper). No attribution comment is present.
+**Confirm** whether these were adapted from LearnOpenGL; if so, credit **Joey de Vries /
+learnopengl.com (CC BY-NC 4.0)** — and note the **non-commercial** clause if the project is ever
+distributed beyond coursework.
+
+### 11.7 Open attribution gaps (do before release)
+
+1. **Skybox source/license** — currently unknown (§11.4). *Highest risk.*
+2. **Surface the CC-BY model credits** (§11.2) into the README and the presentation slides, not just
+   the bundled `license.txt` files.
+3. **Confirm LearnOpenGL** (or other tutorial) provenance for the Q3 engine classes (§11.6).
+4. **Add missing LICENSE files** for GLM, stb, cgltf, GLAD (§11.1).
+5. **Resolve unused assets** marble_cliff_06 + dry_riverbed_rock (§11.3) — cite or remove.
+6. **Confirm/cite** the ocean-spectrum implementation's origin (§11.5 TODO).
