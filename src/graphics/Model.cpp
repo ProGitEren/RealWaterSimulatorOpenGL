@@ -13,10 +13,6 @@ Model::Model(const std::string& path) {
     loadFromFile(path);
 }
 
-Model::Model(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices) {
-    m_meshes.emplace_back(vertices, indices);
-}
-
 glm::mat4 Model::modelMatrix() const {
     glm::mat4 m(1.0f);
     m = glm::translate(m, m_position);

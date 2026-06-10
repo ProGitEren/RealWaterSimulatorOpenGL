@@ -2,7 +2,6 @@
 #include "core/Camera.h"
 #include "graphics/Shader.h"
 #include "graphics/Model.h"
-#include "graphics/RockGenerator.h"
 #include "ocean/GPUFFTOcean.h"
 #include "ocean/GPUDisturbance.h"
 #include "ocean/OceanMesh.h"
@@ -214,15 +213,8 @@ int main() {
     GPUDisturbance disturbance(kDisturbResolution, kOceanMeshRes * kOceanMeshTile);
 
     // --- OBJECTS ---
-    // Poly Haven marble cliff (glTF + PBR textures). The procedural rock
-    // generator is still available (generateRock) as a fallback.
+    // Poly Haven marble cliff (glTF + PBR textures).
     Model rock("../assets/models/rock_marble_cliff_05/marble_cliff_05_4k.gltf");
-    if (!rock.loaded()) {
-        std::cerr << "Rock model failed to load — using procedural fallback" << std::endl;
-        std::vector<Vertex> rv; std::vector<unsigned int> ri;
-        generateRock(3u, 1u, rv, ri);
-        rock = Model(rv, ri);
-    }
     rock.setScale(4.0f);
     rock.setPosition(glm::vec3(60.0f, -3.0f, 30.0f)); // partly out of the water
 

@@ -1,4 +1,4 @@
-# Quarter 4 — Dynamic Water Interactions & Procedural Geometry
+# Quarter 4 — Dynamic Water Interactions
 
 ## 📚 The four study quarters
 
@@ -11,7 +11,7 @@ its own, and the four explanations together account for the whole implementation
 | **Q1 — Application Host & Frame Loop** | The program that drives everything: startup, the fixed-timestep render loop, input/camera control, the ImGui control panel, scene assembly, frame recording, and the build system. | `src/main.cpp`, `CMakeLists.txt`, `build_and_run.sh`, `.gitignore` |
 | **Q2 — Ocean Spectral Simulation & Water Surface** | The signature feature: the spectral FFT ocean — ocean spectrum → GPU Stockham IFFT → displacement/normal/foam → the displaced, shaded water surface. | `src/ocean/GPUFFTOcean.*`, `src/ocean/OceanMesh.*`, the 7 `fft_*.comp` shaders, `standard.vert`, `standard.frag` |
 | **Q3 — Rendering Engine, Camera & Scene Objects** | The reusable rendering toolkit (GL context/window, camera, shader programs, meshes, glTF model loading, textures) and how solid scene objects (boats, rock, cliffs) + the skybox are drawn. | `src/core/Window.*`, `src/core/Camera.*`, `src/graphics/{Shader,Mesh,Model,Texture}.*`, `object.vert/frag`, `skybox.vert/frag`, `debug_wireframe.frag` |
-| **Q4 — Water Interactions & Procedural Geometry** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, the boat-wake / ripple disturbance field, and procedural rock generation. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, `src/graphics/RockGenerator.*`, the `rain_*` shaders, `disturbance_*.comp` |
+| **Q4 — Dynamic Water Interactions** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, and the boat-wake / ripple disturbance field. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, the `rain_*` shaders, `disturbance_*.comp` |
 
 > The repository is a real-time GPU water simulator in **C++17 + OpenGL 4.6** (GLFW, GLAD, GLM,
 > STB, cgltf, Dear ImGui — all vendored under `external/`, which is NOT covered by these docs).
@@ -24,10 +24,9 @@ its own, and the four explanations together account for the whole implementation
 
 This quarter is **everything that reacts to or rides on top of the water**. Q2 makes a beautiful but
 *inert* ocean — it heaves and rolls, but nothing touches it. Q4 is the layer that makes the scene feel
-*alive*: boats bob in the swell, rain falls and splashes, moving boats leave a trailing wake, and the
-big central rock is grown from scratch by code.
+*alive*: boats bob in the swell, rain falls and splashes, and moving boats leave a trailing wake.
 
-There are four independent systems, each with a real-world analogy:
+There are three independent systems, each with a real-world analogy:
 
 - **Boat buoyancy (`BoatPhysics`).** Imagine a cork floating on a pond. As a wave passes under it, the
   cork rises and falls and tilts to match the slope of the water. We don't simulate true fluid pressure
@@ -44,15 +43,9 @@ There are four independent systems, each with a real-world analogy:
   a tiny wave simulation (the same physics as a drum skin or pond surface) so the ripples spread and fade
   realistically. Q2's water shader adds this height-map on top of the FFT ocean.
 
-- **Procedural rock (`RockGenerator`).** A geometry recipe: start with a faceted sphere, subdivide it
-  until it's smooth, then push every vertex in and out with layered noise to make it lumpy like a boulder.
-  This is a *fallback* — the scene normally loads a fancy glTF rock, but if that file is missing we grow
-  one here so the scene is never empty.
-
 **Why it exists / what would break without it:** without Q4 the ocean would still render, but boats would
 sit frozen at a fixed height clipping through waves, there would be no rain, no wake behind moving boats,
-no interactive splashes, and (if the glTF rock failed to load) a hole in the middle of the scene. Q4 is
-the "interaction" half of an interactive water *simulator*.
+and no interactive splashes. Q4 is the "interaction" half of an interactive water *simulator*.
 
 ---
 
@@ -75,8 +68,6 @@ shader** and is **driven each frame by Q1's loop**. Every hand-off is explicit:
     (`src/main.cpp:554`).
   - `GPURain::update(...)` / `GPURain::render(...)` are called once per frame with camera position,
     wind, and the UI sliders (`src/main.cpp:677` for update).
-  - The Q2 vertex attribute `Vertex` struct (from Q3's `Mesh.h`) is the output container that
-    `generateRock` fills.
 
 **Outbound (data Q4 hands to other quarters):**
 
@@ -96,8 +87,6 @@ shader** and is **driven each frame by Q1's loop**. Every hand-off is explicit:
 - **To Q3 (the renderer):**
   - `BoatPhysics::position` and `BoatPhysics::orientation` (a `glm::quat`) are read by Q1 to build each
     vehicle's model matrix; Q3's `Model`/`Mesh` then draw the boat with `object.vert/frag`.
-  - `generateRock(...)` fills `std::vector<Vertex>` + indices that Q1 hands to a Q3 `Mesh`/`Model`,
-    but **only as a fallback** when the glTF rock fails to load (`src/main.cpp:218-223`).
   - The rain itself is drawn by Q4's own shaders (`rain_gpu.*`, `rain_splash.*`) but uses the
     projection/view matrices produced by Q3's `Camera`.
 
@@ -116,8 +105,6 @@ shader** and is **driven each frame by Q1's loop**. Every hand-off is explicit:
 | `src/water/GPURain.cpp` | 122 | Drop SSBO setup, compute dispatch, attributeless draw, CPU ripple throttling. |
 | `src/ocean/GPUDisturbance.h` | 39 | Interface for the Verlet wave-equation height field (wake/ripple map). |
 | `src/ocean/GPUDisturbance.cpp` | 82 | Triple-buffer textures, `update()` (propagate), `disturb()` (inject Gaussian pulse). |
-| `src/graphics/RockGenerator.h` | 16 | Declaration of `generateRock(subdivisions, seed, outVerts, outIndices)`. |
-| `src/graphics/RockGenerator.cpp` | 110 | Icosphere subdivision + midpoint cache + layered simplex noise + normal accumulation. |
 | `assets/shaders/rain_update.comp` | 76 | Compute: integrate drops, respawn, splash timer; hash RNG. |
 | `assets/shaders/rain_gpu.vert` | 30 | Attributeless streak vertex shader reading the drop SSBO. |
 | `assets/shaders/rain_gpu.frag` | 10 | Faint silver rain colour with tip→tail alpha fade. |
@@ -406,72 +393,6 @@ it needs the full triple binding.
 
 ---
 
-### `src/graphics/RockGenerator.h` — the rock recipe declaration
-
-A single free function `generateRock(subdivisions, seed, outVertices, outIndices)` (`RockGenerator.h:12`).
-The header documents it as a subdivided **icosphere** with **value-noise displacement** and recomputed
-normals, **deterministic per seed** (same seed ⇒ same rock). `subdivisions` controls smoothness (2–3 is a
-good rock); `seed` varies shape. Output containers are Q3's `std::vector<Vertex>` + `std::vector<unsigned int>`.
-
----
-
-### `src/graphics/RockGenerator.cpp` — icosphere + layered noise
-
-**`buildIcosahedron()`** (`RockGenerator.cpp:10-24`): the 12 canonical icosahedron vertices built from the
-golden ratio `t = (1 + √5)/2 ≈ 1.618` (`:11`), each normalised onto the unit sphere (`:17`), plus the 20
-triangle faces as an index list (`:18-23`). An icosahedron is the most uniform starting point for a sphere
-(20 equilateral faces, no pole pinching).
-
-**`midpoint()`** (`RockGenerator.cpp:27-38`): the **edge-midpoint cache** that keeps subdivision watertight.
-For an edge `(a, b)` it builds a 64-bit key `(min(a,b) << 32) | max(a,b)` (order-independent, so both
-triangles sharing the edge get the *same* new vertex), looks it up in a `std::map<uint64_t, unsigned int>`,
-and if absent creates the normalised midpoint `normalize((verts[a]+verts[b])·0.5)` (projecting it back onto
-the sphere — this is what turns a flat subdivision into a *sphere*), records it, and returns its index.
-
-**Noise tuning constants** (`RockGenerator.cpp:41-51`):
-
-- `kSeedScatterX/Y/Z = 13.13 / 7.77 / 3.33` — multipliers turning the integer `seed` into a 3D offset into
-  noise space (so different seeds sample different regions of the noise field).
-- `kNoiseBaseFreq = 2.3f` — base sampling frequency (how lumpy the lowest octave is).
-- `kOctaveAmp0/1/2 = 0.50 / 0.25 / 0.13` — per-octave amplitudes (each octave contributes less, ≈½ each
-  step — a **fractal/fBm** falloff).
-- `kOctaveFreq1/2 = 2.1 / 4.3` — per-octave frequency multipliers (each octave roughly doubles detail; the
-  non-integer ratios avoid the noise repeating).
-- `kDisplacementGain = 0.45f` — how far the summed noise pushes the vertex radius.
-- `kVerticalSquash = 0.8f` — flattens Y so the rock sits like a boulder, not a perfect ball.
-
-**`generateRock()`** (`RockGenerator.cpp:54-110`):
-
-1. **Base mesh** (`:57-59`): `buildIcosahedron(verts, tris)`.
-2. **Subdivide** `subdivisions` times (`:62-74`): for each pass, build a fresh `cache`, and for every
-   triangle `(a,b,c)` create midpoints `ab, bc, ca` (via the cache) and emit the **4 child triangles**
-   `{a,ab,ca}, {b,bc,ab}, {c,ca,bc}, {ab,bc,ca}` — the standard 1→4 loop subdivision that quadruples the
-   triangle count each pass.
-3. **Displace** (`:76-88`): compute `seedOffset = seed · (kSeedScatterX, kSeedScatterY, kSeedScatterZ)`.
-   For each unit-sphere vertex `v`: sample point `p = v·kNoiseBaseFreq + seedOffset`, then sum three
-   octaves of `glm::simplex` (despite the "value-noise" wording in the header, the code uses **simplex
-   noise**):
-   ```
-   n = kOctaveAmp0·simplex(p)
-     + kOctaveAmp1·simplex(p·kOctaveFreq1)
-     + kOctaveAmp2·simplex(p·kOctaveFreq2)
-   radius = 1 + kDisplacementGain·n
-   v *= radius;  v.y *= kVerticalSquash
-   ```
-   This pushes each vertex in/out along its radial direction by the fractal noise, then squashes Y.
-4. **Vertices with placeholder normals** (`:91-98`): resize `outVertices`, copy positions, zero the
-   normals, and assign a **planar UV** `(v.x·0.5 + 0.5, v.z·0.5 + 0.5)` (a top-down projection — good
-   enough for a noise/material look). `outIndices = tris`.
-5. **Face-normal accumulation** (`:100-109`): for each triangle, the unnormalised face normal is the cross
-   product `fn = (verts[ib]−verts[ia]) × (verts[ic]−verts[ia])`; add `fn` to each of the triangle's three
-   vertex normals. Because `fn`'s magnitude is proportional to twice the triangle area, this naturally
-   **area-weights** the smooth normals. Finally normalise every vertex normal (`:107-109`).
-
-**Gotcha:** normals are accumulated from the **displaced** `verts` (the same array that was pushed by
-noise), so the lighting matches the bumpy surface, not the original sphere.
-
----
-
 ### `assets/shaders/rain_update.comp` — drop integration on the GPU
 
 `#version 460`, `local_size_x = 256` (`rain_update.comp:1-2`).
@@ -659,8 +580,6 @@ step rather than the variable frame `dt`.
   spring integrator stable through frame hitches and steep waves; removing either risks NaNs / capsizing.
 - **`facetsX/Z` are floored to 2** in `step()` (`BoatPhysics.cpp:42-43`) so the least-squares slope fit
   always has a real lever arm; a 1×N grid would zero a denominator.
-- **RockGenerator is a fallback only** (`src/main.cpp:218-223`). It accumulates normals from the
-  *displaced* vertices, and uses `glm::simplex` despite the header saying "value-noise".
 
 ---
 
@@ -683,9 +602,6 @@ step rather than the variable frame `dt`.
   broad swell, from the same `disturb()` call.
 - **Courant condition is king** for the wave field: fixed `dt`, fixed wave speed, and a hard `HEIGHT_CLAMP`
   backstop.
-- **The rock is grown, not modelled:** icosahedron → cached-midpoint subdivision (1→4 triangles, projected
-  to the sphere) → 3-octave simplex radial displacement → area-weighted normals. Deterministic per seed,
-  used only when the glTF rock is missing.
 - **Several magic numbers are duplicated across files on purpose** (`kWaterSurfaceY`, `kSplashLife`,
   `TWO_PI`, the 256 resolution); treat them as cross-file invariants.
 
@@ -731,16 +647,6 @@ step rather than the variable frame `dt`.
   ripple of radius `sigmaTexels`.
 - **Damping factor:** the per-step multiplier (<1) that bleeds energy out of the wave field so ripples fade
   (`kDamping = 0.998`).
-- **Icosahedron / icosphere:** a 20-faced regular polyhedron; subdividing its faces and projecting new
-  vertices to the sphere yields an evenly-tessellated "icosphere".
-- **Subdivision + midpoint cache:** splitting each triangle into 4; the cache ensures an edge shared by two
-  triangles produces one shared midpoint vertex (a watertight mesh).
-- **Simplex noise:** a smooth, gradient-based procedural noise (Perlin's successor) sampled by
-  `glm::simplex`; summed across octaves for fractal detail.
-- **Octave / fBm (fractional Brownian motion):** layering noise at doubling frequency and halving amplitude
-  to build natural-looking detail.
-- **Face-normal accumulation (area-weighted normals):** summing each triangle's (unnormalised) cross-product
-  normal into its vertices then normalising, giving smooth, area-weighted vertex normals.
 - **Freeboard:** the height of a hull above the waterline; here the `floatHeight` offset added to the heave
   target.
 - **Fresnel / Schlick (referenced by Q2):** the angle-dependent reflectance of water; computed in Q2's

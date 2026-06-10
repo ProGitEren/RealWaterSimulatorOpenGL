@@ -11,7 +11,7 @@ its own, and the four explanations together account for the whole implementation
 | **Q1 — Application Host & Frame Loop** | The program that drives everything: startup, the fixed-timestep render loop, input/camera control, the ImGui control panel, scene assembly, frame recording, and the build system. | `src/main.cpp`, `CMakeLists.txt`, `build_and_run.sh`, `.gitignore` |
 | **Q2 — Ocean Spectral Simulation & Water Surface** | The signature feature: the spectral FFT ocean — ocean spectrum → GPU Stockham IFFT → displacement/normal/foam → the displaced, shaded water surface. | `src/ocean/GPUFFTOcean.*`, `src/ocean/OceanMesh.*`, the 7 `fft_*.comp` shaders, `standard.vert`, `standard.frag` |
 | **Q3 — Rendering Engine, Camera & Scene Objects** | The reusable rendering toolkit (GL context/window, camera, shader programs, meshes, glTF model loading, textures) and how solid scene objects (boats, rock, cliffs) + the skybox are drawn. | `src/core/Window.*`, `src/core/Camera.*`, `src/graphics/{Shader,Mesh,Model,Texture}.*`, `object.vert/frag`, `skybox.vert/frag`, `debug_wireframe.frag` |
-| **Q4 — Water Interactions & Procedural Geometry** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, the boat-wake / ripple disturbance field, and procedural rock generation. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, `src/graphics/RockGenerator.*`, the `rain_*` shaders, `disturbance_*.comp` |
+| **Q4 — Dynamic Water Interactions** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, and the boat-wake / ripple disturbance field. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, the `rain_*` shaders, `disturbance_*.comp` |
 
 > The repository is a real-time GPU water simulator in **C++17 + OpenGL 4.6** (GLFW, GLAD, GLM,
 > STB, cgltf, Dear ImGui — all vendored under `external/`, which is NOT covered by these docs).
@@ -72,8 +72,8 @@ Q3 is the most "shared" quarter — its classes are used by all the others. The 
   (`GL_TEXTURE0` + `GL_TEXTURE_CUBE_MAP`, `main.cpp:860–861`) before each `Model::draw`. Both
   `object.frag` and `skybox.frag` read `uniform samplerCube skybox` from that unit (set with
   `objectShader.setInt("skybox", 0)`, `main.cpp:154`).
-- Q1 sets the per-frame uniforms `projection`, `view`, `viewPos`, and the rock fallback `baseColor`
-  on `objectShader` before drawing solid objects (`main.cpp:855–859`).
+- Q1 sets the per-frame uniforms `projection`, `view`, `viewPos`, and the textureless-material
+  `baseColor` fallback on `objectShader` before drawing solid objects (`main.cpp:855–859`).
 - Q1 supplies the **texture-unit contract**: Q3's `Model::draw` binds material maps to units **4–7**
   precisely because units 0–3 are reserved for the ocean's skybox/displacement/normal/disturbance
   textures (see `Model.cpp:33–34`). Breaking that split would collide with Q2/Q4 bindings.
@@ -86,8 +86,7 @@ Q3 is the most "shared" quarter — its classes are used by all the others. The 
   (`Shader debugWireframeShader("../assets/shaders/standard.vert", ".../debug_wireframe.frag")`,
   `main.cpp:148`): it reuses the water vertex shader's vertex layout but discards shading, painting
   the displaced ocean mesh flat white for inspection.
-- Q4's `RockGenerator` produces CPU geometry that is handed to Q3's **`Model(vertices, indices)`**
-  constructor; Q4's `BoatPhysics` produces a `glm::quat` orientation that is fed to Q3's
+- Q4's `BoatPhysics` produces a `glm::quat` orientation that is fed to Q3's
   `Model::setOrientation`, and `Model::localCenter()` is consumed by Q4's wake alignment.
 
 ---
@@ -321,8 +320,7 @@ GL_UNSIGNED_INT, nullptr)` → unbind. **Note:** `Mesh::draw()` binds *no* mater
 
 **Purpose.** The reusable solid-object loader. Loads a glTF/GLB file into one or more `Mesh`es via
 **cgltf**, carries a transform (position / orientation quaternion / scale), bakes a local-space AABB,
-builds the model matrix, and draws every mesh with material uniforms bound. Also constructs directly
-from in-memory geometry (used by Q4's `RockGenerator`).
+builds the model matrix, and draws every mesh with material uniforms bound.
 
 **Members** (`Model.h:49–55`):
 - `std::vector<Mesh> m_meshes`.
@@ -584,8 +582,6 @@ wireframe for debugging.
   source handles. `Model` relies on this to hold `std::vector<Mesh>`.
 - **No runtime resize of the aspect ratio.** `framebuffer_size_callback` updates `glViewport` but not
   `m_width`/`m_height` (`Window.cpp:62–65`); Q1's projection aspect stays at the launch size.
-- **The procedural `Model(vertices, indices)` constructor skips the AABB.** `localCenter()` returns
-  `(0,0,0)` for procedural rocks — only `loadFromFile` bakes the bounds.
 - **`Camera` movement is along its own basis, frame-rate-independent** (`MovementSpeed · deltaTime`),
   but the camera holds no velocity/inertia — it is purely positional. Pitch is clamped to ±89°.
 - **Shader uniform setters fail silently.** A misspelled or unused uniform name yields location `-1`

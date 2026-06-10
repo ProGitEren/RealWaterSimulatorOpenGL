@@ -11,7 +11,7 @@ its own, and the four explanations together account for the whole implementation
 | **Q1 — Application Host & Frame Loop** | The program that drives everything: startup, the fixed-timestep render loop, input/camera control, the ImGui control panel, scene assembly, frame recording, and the build system. | `src/main.cpp`, `CMakeLists.txt`, `build_and_run.sh`, `.gitignore` |
 | **Q2 — Ocean Spectral Simulation & Water Surface** | The signature feature: the spectral FFT ocean — ocean spectrum → GPU Stockham IFFT → displacement/normal/foam → the displaced, shaded water surface. | `src/ocean/GPUFFTOcean.*`, `src/ocean/OceanMesh.*`, the 7 `fft_*.comp` shaders, `standard.vert`, `standard.frag` |
 | **Q3 — Rendering Engine, Camera & Scene Objects** | The reusable rendering toolkit (GL context/window, camera, shader programs, meshes, glTF model loading, textures) and how solid scene objects (boats, rock, cliffs) + the skybox are drawn. | `src/core/Window.*`, `src/core/Camera.*`, `src/graphics/{Shader,Mesh,Model,Texture}.*`, `object.vert/frag`, `skybox.vert/frag`, `debug_wireframe.frag` |
-| **Q4 — Water Interactions & Procedural Geometry** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, the boat-wake / ripple disturbance field, and procedural rock generation. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, `src/graphics/RockGenerator.*`, the `rain_*` shaders, `disturbance_*.comp` |
+| **Q4 — Dynamic Water Interactions** | Everything dynamic layered on the ocean: boat buoyancy (6-DOF spring-damper), GPU rain + splashes, and the boat-wake / ripple disturbance field. | `src/water/BoatPhysics.*`, `src/water/GPURain.*`, `src/ocean/GPUDisturbance.*`, the `rain_*` shaders, `disturbance_*.comp` |
 
 > The repository is a real-time GPU water simulator in **C++17 + OpenGL 4.6** (GLFW, GLAD, GLM,
 > STB, cgltf, Dear ImGui — all vendored under `external/`, which is NOT covered by these docs).
@@ -87,10 +87,8 @@ hand-off points (constructor args, function calls, texture units, SSBO bindings,
   `window.swapBuffers()`, `window.pollEvents()`; `camera.GetViewMatrix()`, `camera.ProcessKeyboard()`,
   `camera.ProcessMouseMovement()`, `camera.Position`, `camera.Front`; and `model.draw()`,
   `model.setPosition/Scale/Orientation/RotationY()`, `model.localCenter()`, `model.loaded()`.
-- **Falls back** to Q4's `generateRock()` to feed a `Model(vertices, indices)` when the glTF rock
-  fails (`main.cpp:220–225`).
 
-### Into Q4 (Water Interactions & Procedural Geometry)
+### Into Q4 (Dynamic Water Interactions)
 - **Constructs** `GPUDisturbance disturbance(kDisturbResolution, kOceanMeshRes * kOceanMeshTile)`
   (`main.cpp:214`), `GPURain rainSystem(120000u)` (`main.cpp:341`), and one `BoatPhysics phys` member
   inside each `Vehicle` (`main.cpp:251`).
@@ -104,7 +102,6 @@ hand-off points (constructor args, function calls, texture units, SSBO bindings,
 - **Drives buoyancy**: per frame sets `phys.buoyancy/linearDamp/angularDamp` then calls
   `phys.step(deltaTime, pos, yaw, surfFn)` (`main.cpp:689–692`), reading back `phys.position` and
   `phys.orientation` for rendering (`main.cpp:876`, `884`).
-- **Calls** Q4's `generateRock()` (`main.cpp:223`) as the procedural rock fallback.
 
 ### Data Q1 produces for the shaders directly
 - **GL texture units** assigned at render (`main.cpp:799–806`): unit **0** = sky cubemap,
@@ -136,8 +133,8 @@ This single translation unit *is* the application. It has three top-level pieces
 
 #### Includes & STB single-header definitions (`main.cpp:1–36`)
 - Lines `1–10` pull in the public headers from all four quarters: Q3 `core/Window.h`,
-  `core/Camera.h`, `graphics/Shader.h`, `graphics/Model.h`; Q4 `graphics/RockGenerator.h`,
-  `ocean/GPUDisturbance.h`, `water/GPURain.h`, `water/BoatPhysics.h`; Q2 `ocean/GPUFFTOcean.h`,
+  `core/Camera.h`, `graphics/Shader.h`, `graphics/Model.h`; Q4 `ocean/GPUDisturbance.h`,
+  `water/GPURain.h`, `water/BoatPhysics.h`; Q2 `ocean/GPUFFTOcean.h`,
   `ocean/OceanMesh.h`.
 - Lines `12–14` pull in Dear ImGui + its GLFW and OpenGL3 backends.
 - `cstdlib` (line `24`) is included explicitly with a comment: `rand()`/`RAND_MAX` are *not*
@@ -228,9 +225,8 @@ The init order is deliberate; each step depends on the previous ones existing.
 7. **Ocean trio** (`211–214`). `GPUFFTOcean ocean`, `OceanMesh oceanMesh`, `GPUDisturbance
    disturbance` — see the Q2/Q4 hand-offs above. Both `ocean` and `disturbance` receive the same
    `kOceanMeshRes * kOceanMeshTile` world size.
-8. **Rock** (`216–227`). Loads the Poly Haven marble cliff glTF into `Model rock`. If
-   `!rock.loaded()`, it falls back to the procedural `generateRock(3u, 1u, …)` (Q4) and rebuilds the
-   model from raw vertices/indices. Scaled ×4, positioned at `(60, -3, 30)` (partly out of the water).
+8. **Rock** (`216–220`). Loads the Poly Haven marble cliff glTF into `Model rock`. Scaled ×4,
+   positioned at `(60, -3, 30)` (partly out of the water).
 9. **Vehicles** (`229–275`). Loads `jetski`, `yacht`, `bigShip` glTFs. Defines the `Vehicle` struct
    (model pointer, `pos`, `heading`, `speed`, `scale`, `yOffset`, `modelYaw`, `wakeWidth`,
    `hullLength`, `wakeScale`, runtime `turnVel`/`bankAngle`, and an embedded `BoatPhysics phys`).
@@ -417,8 +413,8 @@ current cubemap texture, `return 0`.
 
 The build definition (CMake ≥ 3.15, project `RealWaterSimulator`).
 - **Standard** (`4–5`): C++17, required (no silent fallback).
-- **`SOURCES`** (`7–21`): every project `.cpp` across all four quarters — `main.cpp`, the Q3 core
-  (`Window`, `Camera`) and graphics (`Shader`, `Mesh`, `Model`, `Texture`, `RockGenerator`), the Q2
+- **`SOURCES`** (`7–20`): every project `.cpp` across all four quarters — `main.cpp`, the Q3 core
+  (`Window`, `Camera`) and graphics (`Shader`, `Mesh`, `Model`, `Texture`), the Q2
   ocean (`GPUFFTOcean`, `OceanMesh`), Q4 (`GPUDisturbance`, `GPURain`, `BoatPhysics`). Shaders are
   *not* listed — they're loaded at runtime from `../assets/shaders/`.
 - **`add_executable`** (`23`) and `set_target_properties` (`25–31`): force every build-config's

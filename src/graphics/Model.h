@@ -18,10 +18,6 @@ public:
     // meshes) and prints an error; check loaded().
     explicit Model(const std::string& path);
 
-    // Builds a Model directly from in-memory geometry (used by the procedural
-    // rock generator).
-    Model(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
-
     bool loaded() const { return !m_meshes.empty(); }
 
     // Transform
