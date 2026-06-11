@@ -116,14 +116,21 @@ void main() {
 
     if (rippleVisibleHere) {
         for (int i = 0; i < numRipples; i++) {
-            vec2  center = rippleSSBO.ripples[i].xy;
+            vec4  rip    = rippleSSBO.ripples[i];
+            if (rip.w < 0.5) continue;                 // empty ring-buffer slot
+            vec2  center = rip.xy;
             vec2  d2v    = FragPos.xz - center;
             float dist2  = dot(d2v, d2v);
             // EARLY OUT: outside this ripple's maximum footprint -> contributes 0.
             if (dist2 > kRippleMax2 || dist2 < 1e-6) continue;
 
+            // Ripples now carry their SPAWN TIME (written by the rain compute shader
+            // at the exact impact); derive age here so it stays in lockstep with the
+            // splash. Stale slots (rain stopped) age past kLifetime and are skipped.
+            float age  = time - rip.z;
+            if (age < 0.0 || age > kLifetime) continue;
+
             float dist = sqrt(dist2);
-            float age  = rippleSSBO.ripples[i].z;
 
             float life = clamp(age / kLifetime, 0.0, 1.0);
             float fade = 1.0 - smoothstep(0.55, 1.0, life);

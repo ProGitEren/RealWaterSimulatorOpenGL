@@ -11,6 +11,15 @@ struct Drop { vec4 pos; vec4 vel; };
 
 layout(std430, binding = 0) buffer DropBuffer { Drop drops[]; };
 
+// Ripple ring buffer — SHARED with the water shader (standard.frag, binding 4).
+// When a drop hits the water we write its impact here, so a ripple ring is born
+// at the EXACT hit point and frame, perfectly synced with the splash. A single
+// atomic counter hands out slots in a fixed ring of uRippleCap entries (the 512
+// newest impacts survive). Layout matches standard.frag: .xy = world XZ centre,
+// .z = spawn time (the shader derives age = uTime - spawnTime), .w unused.
+layout(std430, binding = 4) buffer RippleBuffer { vec4 ripples[]; };
+layout(std430, binding = 5) buffer RippleCounter { uint rippleHead; };
+
 uniform float uDt;
 uniform vec3  uCamPos;       // drops respawn in a disc around the camera
 uniform vec2  uWindDrift;    // horizontal drift velocity (m/s)
@@ -18,6 +27,7 @@ uniform float uFallSpeed;    // base fall speed
 uniform float uSpawnRadius;  // 100 m
 uniform uint  uCount;        // active drop count (= spawnRate-scaled)
 uniform float uTime;
+uniform uint  uRippleCap;    // ring-buffer size (= 512, matches the water SSBO)
 
 const float TWO_PI = 6.2831853; // matches the 2*pi used CPU-side in GPURain
 
@@ -64,6 +74,12 @@ void main() {
     if (d.pos.y <= kWaterSurfaceY && !outside) {
         // Remember WHERE it hit (splash plays here even after the drop respawns).
         float ix = d.pos.x, iz = d.pos.z;
+
+        // Spawn a ripple ring at the EXACT impact, this frame — grab the next
+        // ring-buffer slot atomically so concurrent impacts don't collide.
+        uint slot = atomicAdd(rippleHead, 1u) % uRippleCap;
+        ripples[slot] = vec4(ix, iz, uTime, 1.0);  // .z = spawn time, .w = alive flag
+
         respawn(d, id);
         d.vel.x = kSplashLife;
         d.vel.y = ix;

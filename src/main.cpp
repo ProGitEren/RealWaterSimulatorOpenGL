@@ -84,9 +84,11 @@ namespace {
     constexpr float         kOceanMeshTile    = 1.0f;  // meters per tile -> 1024m
     constexpr int           kPhysicsGridSize  = 150;   // CPU physics grid (rain ripples)
     constexpr float         kPhysicsTileSize  = 1.0f;
-    // 256 entries = 256 loop iterations per fragment — safe budget.
+    // Ripple ring-buffer size = max simultaneous live ripples AND the per-pixel
+    // loop length in the water shader. The squared-distance early-out keeps the
+    // real cost ~ only nearby ripples, so this is the loop *budget*, not the cost.
     // SSBO avoids the constant-register limit that blocked uniform arrays.
-    constexpr int           kMaxRipples       = 512;
+    constexpr int           kMaxRipples       = 2048;
     // Window framebuffer size (also used by the recording / readback path).
     constexpr int           kWindowWidth      = 1024;
     constexpr int           kWindowHeight     = 768;
@@ -94,31 +96,25 @@ namespace {
     // ctor below and the 256.0 divisor in standard.frag.
     constexpr unsigned int  kDisturbResolution = 256;
 
-    GLuint rippleSSBO = 0;
-    glm::vec4 rippleStagingBuf[kMaxRipples]; // pre-allocated, no heap alloc per frame
+    // Rain ripple rings live in a GPU ring buffer that the rain compute shader
+    // fills DIRECTLY at each drop's impact (binding 4), with an atomic write head
+    // (binding 5). The water shader reads binding 4. No CPU spawning, no upload —
+    // rings are born at the exact hit point + frame, in lockstep with the splash.
+    GLuint rippleSSBO    = 0;   // vec4[kMaxRipples]: xy=XZ, z=spawnTime, w=alive
+    GLuint rippleHeadSSBO = 0;  // single uint atomic write head
 
     void initRippleSSBO() {
+        std::vector<glm::vec4> zero(kMaxRipples, glm::vec4(0.0f)); // w=0 => all slots empty
         glGenBuffers(1, &rippleSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, rippleSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, kMaxRipples * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, kMaxRipples * sizeof(glm::vec4), zero.data(), GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, rippleSSBO);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    }
 
-    void uploadRipples(const Shader& shader, const std::deque<glm::vec3>& ripples) {
-        const int total = static_cast<int>(ripples.size());
-        const int count = std::min(total, kMaxRipples);
-        shader.setInt("numRipples", count);
-        if (count == 0) return;
-
-        // Pack newest `count` entries into pre-allocated staging buffer
-        const int offset = total - count;
-        for (int i = 0; i < count; ++i)
-            rippleStagingBuf[i] = glm::vec4(ripples[offset + i], 0.0f);
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, rippleSSBO);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, count * sizeof(glm::vec4), rippleStagingBuf);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, rippleSSBO);
+        GLuint head = 0;
+        glGenBuffers(1, &rippleHeadSSBO);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, rippleHeadSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(GLuint), &head, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, rippleHeadSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 }
@@ -330,7 +326,9 @@ int main() {
     }
 
     // --- RAIN (GPU-driven: drops live + update in an SSBO; instanced draw) ---
-    GPURain         rainSystem(120000u); // max drops the GPU buffer holds
+    // Max live drops = spawnRate(<=500) * 24 = 12000, so 16384 is a comfortable
+    // cap. The old 120000 over-allocated the SSBO ~7x for no benefit.
+    GPURain         rainSystem(16384u);
     initRippleSSBO();
 
     // --- LOOP STATE ---
@@ -666,7 +664,8 @@ int main() {
         // so one compute dispatch over the whole frame's dt is identical-looking
         // but avoids redundant dispatches on slow frames.
         rainSystem.update(deltaTime, camera.Position, rainWindDrift,
-                          rainFallSpeed, rainSpawnRate, rippleLifetime);
+                          rainFallSpeed, rainSpawnRate,
+                          rippleSSBO, rippleHeadSSBO, kMaxRipples);
 
         // Read the ocean displacement back to the CPU ONCE per frame (after all
         // fixed substeps) for object height sampling — see readbackDisplacement().
@@ -797,8 +796,6 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
 
-        const std::deque<glm::vec3>& activeRipples = rainSystem.getActiveRipples();
-
         if (wireframeMode) {
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             debugWireframeShader.use();
@@ -840,7 +837,11 @@ int main() {
                 shader.setFloat("uSunGlitter",        sunGlitter);
                 shader.setFloat("uExposure",          hdrExposure);
             }
-            uploadRipples(shader, activeRipples);
+            // The rain compute shader fills the ripple ring buffer (binding 4) at
+            // real impacts; the water shader scans all kMaxRipples slots and skips
+            // empty/expired ones. Just tell it the slot count + keep binding 4 live.
+            shader.setInt("numRipples", kMaxRipples);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, rippleSSBO);
             oceanMesh.draw(shader);
 
             // --- OBJECTS (solid, depth-tested, before transparent skybox/rain) ---

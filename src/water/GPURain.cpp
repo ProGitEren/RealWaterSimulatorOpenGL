@@ -6,15 +6,7 @@
 
 namespace {
     struct Drop { float pos[4]; float vel[4]; }; // matches the SSBO layout
-    constexpr std::size_t kMaxStoredRipples = 4000;
-    constexpr float kRippleTarget = 480.0f;   // ~ SSBO budget (512) in the water shader
-    constexpr float kRippleRadius = 80.0f;    // rings spawn within this of the camera
-    constexpr float kSpawnRadius  = 100.0f;
-    constexpr float kTwoPi        = 6.2831853f;       // 2*pi (matches the rain shaders)
-    constexpr float kMaxRippleBurstPerFrame = 20.0f;  // cap rings spawned in one frame
-    // Uniform [0,1). Uses the global C rand() with its default seed (no srand
-    // anywhere in src/), so ripple placement is deterministic across runs.
-    float frand01() { return float(rand()) / float(RAND_MAX); }
+    constexpr float kSpawnRadius = 100.0f;        // drops live in this disc around the camera
 }
 
 GPURain::GPURain(unsigned int maxDrops)
@@ -38,54 +30,36 @@ GPURain::~GPURain() {
 }
 
 void GPURain::update(float dt, const glm::vec3& camPos, glm::vec2 windDrift,
-                     float fallSpeed, int spawnRate, float rippleLifetime) {
+                     float fallSpeed, int spawnRate,
+                     unsigned int rippleSSBO, unsigned int rippleHeadSSBO,
+                     unsigned int rippleCap) {
     m_time += dt;
 
-    // Active drop count scales with the spawn-rate slider. spawnRate is "drops per
-    // frame" in the old system; here it maps to how many drops are alive (a denser
-    // sheet). Cap to the buffer size.
+    // Active drop count scales with the spawn-rate slider — it maps to how many
+    // drops are alive (a denser sheet). Cap to the buffer size.
     const float dropsPerSpawn = 24.0f; // each "spawn rate" unit keeps this many drops alive
     m_activeCount = std::min(m_maxDrops, static_cast<unsigned int>(spawnRate * dropsPerSpawn));
+    if (m_activeCount == 0) return;
 
-    // --- GPU: advance every drop in one compute dispatch ---
-    if (m_activeCount > 0) {
-        m_updateShader.use();
-        m_updateShader.setFloat("uDt", dt);
-        m_updateShader.setVec3 ("uCamPos", camPos);
-        m_updateShader.setVec2 ("uWindDrift", windDrift);
-        m_updateShader.setFloat("uFallSpeed", fallSpeed);
-        m_updateShader.setFloat("uSpawnRadius", kSpawnRadius);
-        m_updateShader.setUInt ("uCount", m_activeCount);
-        m_updateShader.setFloat("uTime", m_time);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
-        glDispatchCompute((m_activeCount + 255u) / 256u, 1, 1);
-        // We read the drop SSBO in the vertex shader as storage (not as vertex
-        // attributes), so only the shader-storage barrier is needed.
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    }
-
-    // --- CPU: throttled ripple-ring spawner (cheap, feeds the water shader) ---
-    // Independent of drop count: a steady ~480/lifetime rings around the camera so
-    // the surface always shows rain rings without overflowing the 512-entry SSBO.
-    const float rippleRate = kRippleTarget / std::max(rippleLifetime, 0.25f);
-    m_rippleBudget = std::min(m_rippleBudget + rippleRate * dt, kMaxRippleBurstPerFrame);
-    if (spawnRate > 0) {
-        while (m_rippleBudget >= 1.0f) {
-            m_rippleBudget -= 1.0f;
-            float a = frand01() * kTwoPi;
-            float r = std::sqrt(frand01()) * kRippleRadius;
-            // Packed for the water shader: .x/.y = world X/Z centre, .z = age (s,
-            // incremented below) — matches standard.frag's RippleBuffer layout.
-            glm::vec3 ring(camPos.x + std::cos(a) * r, camPos.z + std::sin(a) * r, 0.0f);
-            if (m_ripples.size() >= kMaxStoredRipples) m_ripples.pop_front();
-            m_ripples.push_back(ring);
-        }
-    }
-    for (auto it = m_ripples.begin(); it != m_ripples.end(); ) {
-        it->z += dt;
-        if (it->z > rippleLifetime) it = m_ripples.erase(it);
-        else ++it;
-    }
+    // One compute dispatch advances every drop AND writes a ripple ring at each
+    // impact straight into the water shader's ripple buffer (binding 4), so rings
+    // are perfectly synced with the splashes — no CPU spawner.
+    m_updateShader.use();
+    m_updateShader.setFloat("uDt", dt);
+    m_updateShader.setVec3 ("uCamPos", camPos);
+    m_updateShader.setVec2 ("uWindDrift", windDrift);
+    m_updateShader.setFloat("uFallSpeed", fallSpeed);
+    m_updateShader.setFloat("uSpawnRadius", kSpawnRadius);
+    m_updateShader.setUInt ("uCount", m_activeCount);
+    m_updateShader.setFloat("uTime", m_time);
+    m_updateShader.setUInt ("uRippleCap", rippleCap);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, rippleSSBO);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, rippleHeadSSBO);
+    glDispatchCompute((m_activeCount + 255u) / 256u, 1, 1);
+    // Drops are read as storage in the vertex shader; ripples are read by the
+    // water fragment shader — both are SSBO reads, so the storage barrier covers it.
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
 void GPURain::render(Shader& streakShader, Shader& splashShader,
@@ -96,7 +70,9 @@ void GPURain::render(Shader& streakShader, Shader& splashShader,
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
     glBindVertexArray(m_vao);
-    glEnable(GL_LINE_SMOOTH);
+    // NOTE: GL_LINE_SMOOTH is intentionally NOT enabled — antialiased lines fall
+    // back to a slow/buggy path on many Windows drivers (and can balloon driver
+    // memory). Plain aliased lines look fine for rain and are portable + cheap.
 
     // --- Pass 1: rain streaks (thin, faint) ---
     streakShader.use();
@@ -118,5 +94,4 @@ void GPURain::render(Shader& streakShader, Shader& splashShader,
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(m_activeCount) * 2);
 
     glBindVertexArray(0);
-    glDisable(GL_LINE_SMOOTH);
 }
