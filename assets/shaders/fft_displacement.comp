@@ -1,0 +1,29 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform writeonly image2D displacementTexture;
+uniform sampler2D spatialTextureA;
+uniform sampler2D spatialTextureB;
+uniform uint resolution;
+uniform float heightScale;
+uniform float horizontalScale;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(resolution) || coord.y >= int(resolution)) {
+        return;
+    }
+
+    // Stockham FFT does not normalize per-pass. Apply a single 1/N here; the
+    // remaining amplitude is dialed in with heightScale / horizontalScale.
+    float invN = 1.0 / float(resolution);
+
+    vec4 spatialA = texelFetch(spatialTextureA, coord, 0);
+    vec2 spatialB = texelFetch(spatialTextureB, coord, 0).xy;
+    vec3 displacement = vec3(
+        spatialA.x * horizontalScale * invN,
+        spatialA.z * heightScale     * invN,
+        spatialB.x * horizontalScale * invN
+    );
+    imageStore(displacementTexture, coord, vec4(displacement, 1.0));
+}

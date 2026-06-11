@@ -1,0 +1,84 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rg32f) uniform writeonly image2D initialSpectrumTexture;
+uniform sampler2D gaussianNoiseTexture;
+uniform uint resolution;
+uniform float oceanSize;
+uniform float windSpeed;
+uniform vec2 windDirection;
+
+const float PI = 3.14159265359;
+const float GRAVITY = 9.81;
+const float KILOMETERS = 370.0;
+const float CAPILLARY_WAVE_SPEED = 0.23;
+uniform float OMEGA;               // sea maturity / inverse wave age
+uniform float SPECTRUM_BOOST;      // overall wave amplitude
+
+float square(float value) {
+    return value * value;
+}
+
+vec2 waveVector(ivec2 coord) {
+    float n = coord.x < int(resolution / 2u) ? float(coord.x) : float(coord.x) - float(resolution);
+    float m = coord.y < int(resolution / 2u) ? float(coord.y) : float(coord.y) - float(resolution);
+    return (2.0 * PI * vec2(n, m)) / oceanSize;
+}
+
+float dispersion(float waveNumber) {
+    if (waveNumber < 1e-6) {
+        return 0.0;
+    }
+
+    return sqrt(GRAVITY * waveNumber * (1.0 + square(waveNumber / KILOMETERS)));
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(resolution) || coord.y >= int(resolution)) {
+        return;
+    }
+
+    vec2 k = waveVector(coord);
+    float waveNumber = length(k);
+    if (waveNumber < 1e-6) {
+        imageStore(initialSpectrumTexture, coord, vec4(0.0));
+        return;
+    }
+
+    float kp = GRAVITY * square(OMEGA / windSpeed);
+    float cp = dispersion(kp) / kp;
+    float z0 = 0.000037 * square(windSpeed) / GRAVITY * pow(windSpeed / cp, 0.9);
+    float uStar = 0.41 * windSpeed / log(10.0 / z0);
+    float dk = 2.0 * PI / oceanSize;
+
+    float c = dispersion(waveNumber) / waveNumber;
+    float lpm = exp(-1.25 * square(kp / waveNumber));
+    float gamma = 1.7;
+    float sigma = 0.08 * (1.0 + 4.0 * pow(OMEGA, -3.0));
+    float gammaExponent = exp(-square(sqrt(waveNumber / kp) - 1.0) / (2.0 * square(sigma)));
+    float jp = pow(gamma, gammaExponent);
+    float fp = lpm * jp * exp(-OMEGA / sqrt(10.0) * (sqrt(waveNumber / kp) - 1.0));
+    float alphaP = 0.006 * sqrt(OMEGA);
+    float bl = 0.5 * alphaP * cp / c * fp;
+
+    float alphaM = 0.01 * ((uStar < CAPILLARY_WAVE_SPEED)
+        ? (1.0 + log(uStar / CAPILLARY_WAVE_SPEED))
+        : (1.0 + 3.0 * log(uStar / CAPILLARY_WAVE_SPEED)));
+    float fm = exp(-0.25 * square(waveNumber / KILOMETERS - 1.0));
+    float bh = 0.5 * alphaM * CAPILLARY_WAVE_SPEED / c * fm * lpm;
+
+    float a0 = log(2.0) / 4.0;
+    float am = 0.13 * uStar / CAPILLARY_WAVE_SPEED;
+    float delta = tanh(a0 + 4.0 * pow(c / cp, 2.5) + am * pow(CAPILLARY_WAVE_SPEED / c, 2.5));
+    float cosPhi = dot(normalize(k), normalize(windDirection));
+
+    float spectrum = (1.0 / (2.0 * PI)) * pow(waveNumber, -4.0) * (bl + bh) * (1.0 + delta * (2.0 * cosPhi * cosPhi - 1.0));
+    spectrum = max(spectrum, 0.0);
+    // No high-frequency cutoff: at resolution 512 the grid carries the short
+    // capillary waves without aliasing, and those short waves are the crisp detail.
+
+    vec2 gaussian = texelFetch(gaussianNoiseTexture, coord, 0).xy;
+    float amplitude = sqrt(spectrum * 0.5) * dk * SPECTRUM_BOOST;
+    imageStore(initialSpectrumTexture, coord, vec4(gaussian * amplitude, 0.0, 0.0));
+}

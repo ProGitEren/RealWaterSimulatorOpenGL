@@ -1,0 +1,57 @@
+#version 460 core
+// Stockham radix-2 FFT — vertical (columns) pass.
+// Same ping-pong structure as the horizontal pass, transposed: each thread
+// owns one butterfly within a column, two samples spaced N/2 apart vertically.
+//
+// Data layout (three complex sequences):
+//   Texture A (rgba32f): xy = complex dx,  zw = complex height (h)
+//   Texture B (rg32f):   xy = complex dz
+
+layout(local_size_x = 1, local_size_y = 256, local_size_z = 1) in;
+
+layout(binding = 0, rgba32f) uniform readonly  image2D inputA;
+layout(binding = 1, rg32f)   uniform readonly  image2D inputB;
+layout(binding = 2, rgba32f) uniform writeonly image2D outputA;
+layout(binding = 3, rg32f)   uniform writeonly image2D outputB;
+
+uniform int resolution;
+uniform int subseqCount;
+
+const float PI = 3.14159265359;
+
+vec2 complexMul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
+}
+
+void main() {
+    int colIndex  = int(gl_GlobalInvocationID.x);   // which column
+    int threadIdx = int(gl_GlobalInvocationID.y);   // butterfly index within the column [0, N/2)
+    int halfN     = resolution >> 1;
+    if (colIndex >= resolution || threadIdx >= halfN) return;
+
+    int inIdx  = threadIdx & (subseqCount - 1);
+    int outIdx = ((threadIdx - inIdx) << 1) + inIdx;
+
+    float angle   = -PI * (float(inIdx) / float(subseqCount));
+    vec2  twiddle = vec2(cos(angle), sin(angle));
+
+    // Two input samples spaced N/2 apart on this column
+    vec4 aA = imageLoad(inputA, ivec2(colIndex, threadIdx));
+    vec4 bA = imageLoad(inputA, ivec2(colIndex, threadIdx + halfN));
+    vec2 aB = imageLoad(inputB, ivec2(colIndex, threadIdx)).xy;
+    vec2 bB = imageLoad(inputB, ivec2(colIndex, threadIdx + halfN)).xy;
+
+    vec2 tDx = complexMul(twiddle, bA.xy);
+    vec2 tH  = complexMul(twiddle, bA.zw);
+    vec2 tDz = complexMul(twiddle, bB.xy);
+
+    vec4 outLoA = vec4(aA.xy + tDx, aA.zw + tH);
+    vec4 outHiA = vec4(aA.xy - tDx, aA.zw - tH);
+    vec2 outLoB = aB + tDz;
+    vec2 outHiB = aB - tDz;
+
+    imageStore(outputA, ivec2(colIndex, outIdx),               outLoA);
+    imageStore(outputA, ivec2(colIndex, outIdx + subseqCount), outHiA);
+    imageStore(outputB, ivec2(colIndex, outIdx),               vec4(outLoB, 0.0, 0.0));
+    imageStore(outputB, ivec2(colIndex, outIdx + subseqCount), vec4(outHiB, 0.0, 0.0));
+}

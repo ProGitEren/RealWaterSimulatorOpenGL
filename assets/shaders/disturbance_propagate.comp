@@ -1,0 +1,32 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Verlet integration: next = (2*cur - prev + c*laplacian) * damping
+layout(binding = 0, r32f) uniform readonly  image2D currImg;
+layout(binding = 1, r32f) uniform readonly  image2D prevImg;
+layout(binding = 2, r32f) uniform writeonly image2D nextImg;
+
+uniform float waveC;   // (speed^2 * dt^2) / dx^2
+uniform float damping; // typically 0.997 - 0.999
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(currImg);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Fixed boundary: clamp neighbours to edge (no wrap)
+    ivec2 L = ivec2(max(coord.x - 1, 0),          coord.y);
+    ivec2 R = ivec2(min(coord.x + 1, size.x - 1), coord.y);
+    ivec2 D = ivec2(coord.x, max(coord.y - 1, 0));
+    ivec2 U = ivec2(coord.x, min(coord.y + 1, size.y - 1));
+
+    float cur  = imageLoad(currImg, coord).r;
+    float prev = imageLoad(prevImg, coord).r;
+    float lapl = imageLoad(currImg, L).r + imageLoad(currImg, R).r
+               + imageLoad(currImg, D).r + imageLoad(currImg, U).r
+               - 4.0 * cur;
+
+    const float HEIGHT_CLAMP = 25.0; // stability bound on the integrated wave height
+    float next = clamp((2.0 * cur - prev + waveC * lapl) * damping, -HEIGHT_CLAMP, HEIGHT_CLAMP);
+    imageStore(nextImg, coord, vec4(next, 0.0, 0.0, 1.0));
+}

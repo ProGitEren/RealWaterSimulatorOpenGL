@@ -1,0 +1,23 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, r32f) uniform image2D heightImg;
+
+uniform vec2  centerUV;    // impact point in [0,1] UV space
+uniform float amplitude;   // meters
+uniform float sigmaTexels; // Gaussian radius in texels
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(heightImg);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 texelPos    = vec2(coord) + 0.5;
+    vec2 centerTexel = centerUV * vec2(size);
+    vec2 diff        = texelPos - centerTexel;
+    float dist2      = dot(diff, diff);
+
+    float pulse = amplitude * exp(-dist2 / (2.0 * sigmaTexels * sigmaTexels));
+    float prev  = imageLoad(heightImg, coord).r;
+    imageStore(heightImg, coord, vec4(prev + pulse, 0.0, 0.0, 1.0));
+}

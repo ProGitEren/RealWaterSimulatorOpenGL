@@ -1,0 +1,55 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform writeonly image2D spectrumTextureA;
+layout(binding = 1, rg32f) uniform writeonly image2D spectrumTextureB;
+uniform sampler2D initialSpectrumTexture;
+uniform sampler2D phaseTexture;
+uniform uint resolution;
+uniform float oceanSize;
+uniform float choppiness;
+
+const float PI = 3.14159265359;
+
+vec2 complexMul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y);
+}
+
+vec2 complexConjugate(vec2 value) {
+    return vec2(value.x, -value.y);
+}
+
+vec2 waveVector(ivec2 coord) {
+    float n = coord.x < int(resolution / 2u) ? float(coord.x) : float(coord.x) - float(resolution);
+    float m = coord.y < int(resolution / 2u) ? float(coord.y) : float(coord.y) - float(resolution);
+    return (2.0 * PI * vec2(n, m)) / oceanSize;
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(resolution) || coord.y >= int(resolution)) {
+        return;
+    }
+
+    ivec2 mirrored = ivec2((int(resolution) - coord.x) % int(resolution), (int(resolution) - coord.y) % int(resolution));
+    vec2 h0 = texelFetch(initialSpectrumTexture, coord, 0).xy;
+    vec2 h0Mirror = complexConjugate(texelFetch(initialSpectrumTexture, mirrored, 0).xy);
+    float phase = texelFetch(phaseTexture, coord, 0).r;
+    vec2 phasePositive = vec2(cos(phase), sin(phase));
+    vec2 phaseNegative = complexConjugate(phasePositive);
+    vec2 h = complexMul(h0, phasePositive) + complexMul(h0Mirror, phaseNegative);
+
+    vec2 k = waveVector(coord);
+    float waveNumber = length(k);
+    if (waveNumber < 1e-6) {
+        imageStore(spectrumTextureA, coord, vec4(0.0));
+        imageStore(spectrumTextureB, coord, vec4(0.0));
+        return;
+    }
+
+    vec2 dx = complexMul(h, vec2(0.0, -(k.x / waveNumber) * choppiness));
+    vec2 dz = complexMul(h, vec2(0.0, -(k.y / waveNumber) * choppiness));
+
+    imageStore(spectrumTextureA, coord, vec4(dx, h));
+    imageStore(spectrumTextureB, coord, vec4(dz, 0.0, 0.0));
+}
